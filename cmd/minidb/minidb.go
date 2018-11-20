@@ -1,12 +1,13 @@
 // The minidb command line tool
 
-package minidb
+package main
 
 import (
 	"fmt"
 	"os"
 	"strings"
 
+	minidb "github.com/rasteric/minidb"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
 )
 
@@ -27,7 +28,7 @@ const (
 	ERR_SyntaxError
 )
 
-func printItems(items []Item) {
+func printItems(items []minidb.Item) {
 	if len(items) == 0 {
 		return
 	}
@@ -90,7 +91,7 @@ func main() {
 	if *dbfile == "" {
 		*dbfile = "db.sqlite"
 	}
-	db, err := Open("sqlite3", *dbfile)
+	db, err := minidb.Open("sqlite3", *dbfile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR Unable to open database '%s' - %s.\n", *dbfile, err)
 		os.Exit(ERR_CannotOpenDB)
@@ -99,7 +100,7 @@ func main() {
 
 	switch command {
 	case table.FullCommand():
-		fields, err := ParseFieldDesc(*tableFields)
+		fields, err := minidb.ParseFieldDesc(*tableFields)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR Invalid table or field descriptions - %s.\n", err)
 			os.Exit(ERR_InvalidFields)
@@ -127,7 +128,7 @@ func main() {
 		}
 		errCount := 0
 		for i, _ := range *getFields {
-			data, err := db.Get(*getTable, Item(*getItem), (*getFields)[i])
+			data, err := db.Get(*getTable, minidb.Item(*getItem), (*getFields)[i])
 			if err != nil {
 				if *dbview == "titled" {
 					fmt.Printf("%s %d %s: 0\n", *getTable, *getItem, (*getFields)[i])
@@ -152,7 +153,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "ERROR Set failed - %s\n", err)
 			os.Exit(ERR_SetTypeError)
 		}
-		err = db.Set(*setTable, Item(*setItem), *setField, data)
+		err = db.Set(*setTable, minidb.Item(*setItem), *setField, data)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR Set failed - %s\n", err)
 			os.Exit(ERR_SetFailed)
@@ -178,7 +179,7 @@ func main() {
 			os.Exit(ERR_FailedListFields)
 		}
 		for i, _ := range fields {
-			fmt.Printf("%s %s\n", getUserTypeString(fields[i].Sort), fields[i].Name)
+			fmt.Printf("%s %s\n", minidb.GetUserTypeString(fields[i].Sort), fields[i].Name)
 		}
 	case listTables.FullCommand():
 		tables := db.GetTables()
@@ -192,7 +193,7 @@ func main() {
 	case find.FullCommand():
 		_ = findEscape
 		s := strings.Join(*findQuery, " ")
-		query, err := ParseQuery(s)
+		query, err := minidb.ParseQuery(s)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR Syntax error - %s.\n", err)
 			os.Exit(ERR_SyntaxError)
