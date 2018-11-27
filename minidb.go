@@ -802,6 +802,7 @@ func (db *MDB) GetTables() []string {
 
 type QuerySort int
 
+// The sorts of query entries.
 const (
 	ParseError QuerySort = iota + 1
 	Term
@@ -815,12 +816,15 @@ const (
 	EveryTerm
 )
 
+// Query represents a simple or complex database query.
 type Query struct {
 	Sort     QuerySort `json:"sort"`
 	Children []Query   `json:"children"`
 	Data     string    `json:"data"`
 }
 
+// FailedQuery returns a failed Query pointer with the given message as explanation
+// why it failed.
 func FailedQuery(msg string) *Query {
 	return &Query{ParseError, nil, msg}
 }
@@ -1186,8 +1190,10 @@ func (db *MDB) Find(query *Query, limit int64) ([]Item, error) {
 	return result, nil
 }
 
+// Represents a command in Exec().
 type CommandID int
 
+// The actual Exec() CommandID values. Names mirror the respective functions.
 const (
 	CmdOpen CommandID = iota + 1
 	CmdAddTable
@@ -1207,8 +1213,13 @@ const (
 	CmdFieldIsNull
 )
 
+// A database that has been opened.
 type CommandDB int
 
+// Command structures contains all information needed to execute an arbitrary command.
+// Generally, string arguments are passed as subsequent StringArgs, and the same for other
+// lists like FieldArgs. Fitting arguments are added in the order in which they occur in the respective
+// function. The remaining fields are left empty.
 type Command struct {
 	ID        CommandID `json:"id"`
 	DB        CommandDB `json:"dbid"`
@@ -1220,22 +1231,28 @@ type Command struct {
 	IntArg    int64     `json:"int"`
 }
 
+// Result is a structure representing the result of a command execution via Exec().
+// If an error has occurred, then HasError is true and the Int and S fields contain
+// the numeric error code and the error message string. Otherwise the respective fields
+// are filled in, as corresponding to the return value(s) of the respective function call.
 type Result struct {
-	S        string
-	Strings  []string
-	Int      int64
-	B        bool
-	Items    []Item
-	Values   []Value
-	HasError bool
+	S        string   `json:"str"`
+	Strings  []string `json:"strings"`
+	Int      int64    `json:"int64"`
+	B        bool     `json:"bool"`
+	Items    []Item   `json:"items"`
+	Values   []Value  `json:"values"`
+	HasError bool     `json:"iserror"`
 }
 
 var openDBs map[CommandDB]*MDB
 var dbCounter CommandDB
 var mutex sync.RWMutex
 
+// Numeric error codes returned by Exec() in a Result structure's Int field.
 const (
-	ErrCannotOpen int64 = iota + 1
+	NoErr int64 = iota + 1
+	ErrCannotOpen
 	ErrUnknownDB
 	ErrUnknownCommand
 	ErrAddTableFailed
