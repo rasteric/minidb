@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/rasteric/minidb/parser"
 
@@ -53,8 +54,8 @@ func ToBaseType(t FieldType) FieldType {
 }
 
 type Field struct {
-	Name string
-	Sort FieldType
+	Name string    `json:"name"`
+	Sort FieldType `json:"sort"`
 }
 
 func failure(msg string, args ...interface{}) error {
@@ -63,19 +64,19 @@ func failure(msg string, args ...interface{}) error {
 
 // Value holds the values that can be put into the database or retrieved from it.
 type Value struct {
-	str  string
-	num  int64
-	sort FieldType
+	Str  string    `json:"str"`
+	Num  int64     `json:"num"`
+	Sort FieldType `json:"sort"`
 }
 
 // Int returns the value as an int64 and panics if conversion is not possible
 func (v *Value) Int() int64 {
-	switch v.sort {
+	switch v.Sort {
 	case DBInt:
-		return v.num
+		return v.Num
 	default:
 		panic(fmt.Sprintf("cannot convert %s value to integer",
-			GetUserTypeString(v.sort)))
+			GetUserTypeString(v.Sort)))
 	}
 }
 
@@ -83,60 +84,54 @@ func (v *Value) Int() int64 {
 // where binary Blob data is Base64 encoded and the int is converted
 // to decimal format.
 func (v *Value) String() string {
-	switch v.sort {
+	switch v.Sort {
 	case DBInt:
-		return fmt.Sprintf("%d", v.num)
+		return fmt.Sprintf("%d", v.Num)
 	case DBString:
-		return v.str
+		return v.Str
 	case DBBlob:
-		return base64.StdEncoding.EncodeToString([]byte(v.str))
+		return base64.StdEncoding.EncodeToString([]byte(v.Str))
 	default:
 		panic(fmt.Sprintf("cannot convert %s value to string",
-			GetUserTypeString(v.sort)))
+			GetUserTypeString(v.Sort)))
 	}
 }
 
 // Bytes returns the value as a bytes slice. It automatically converts int64 and string.
 // An int64 is written in Little Endian format.
 func (v *Value) Bytes() []byte {
-	switch v.sort {
+	switch v.Sort {
 	case DBInt:
 		bs := make([]byte, 8)
-		binary.LittleEndian.PutUint64(bs, uint64(v.num))
+		binary.LittleEndian.PutUint64(bs, uint64(v.Num))
 		return bs
 	case DBString:
-		bs := []byte(v.str)
+		bs := []byte(v.Str)
 		return bs
 	case DBBlob:
-		bs := []byte(v.str)
+		bs := []byte(v.Str)
 		return bs
 	default:
 		panic(fmt.Sprintf("cannot convert %s value to bytes",
-			GetUserTypeString(v.sort)))
+			GetUserTypeString(v.Sort)))
 	}
-}
-
-// Sort returns the FieldType of the value stored. The field type should never be a list type,
-// because list types are slices of type []Value.
-func (v *Value) Sort() FieldType {
-	return v.sort
 }
 
 // NewInt creates a value that stores an int64.
 func NewInt(n int64) Value {
-	return Value{num: n, sort: DBInt}
+	return Value{Num: n, Sort: DBInt}
 }
 
 // NewString creates a value that stores a string.
 func NewString(s string) Value {
-	return Value{str: s, sort: DBString}
+	return Value{Str: s, Sort: DBString}
 }
 
 // NewBytes creates a value that holds a []byte slice. This is similar to String() but notice
 // that strings and byte slices are handled differently in the database. For example,
 // byte slices may contain NULL characters and may be converted to and from Base64.
 func NewBytes(b []byte) Value {
-	return Value{str: string(b), sort: DBBlob}
+	return Value{Str: string(b), Sort: DBBlob}
 }
 
 var validTable *regexp.Regexp
@@ -702,9 +697,9 @@ func (db *MDB) Set(table string, item Item, field string, data []Value) error {
 	}
 	t := ToBaseType(db.MustGetFieldType(table, field))
 	for i, _ := range data {
-		if data[i].Sort() != t {
+		if data[i].Sort != t {
 			return failure("type error %s %d %s: expected %d, encountered %d",
-				table, item, field, t, data[i].Sort())
+				table, item, field, t, data[i].Sort)
 		}
 	}
 	if db.IsListField(table, field) {
@@ -718,7 +713,7 @@ func (db *MDB) Set(table string, item Item, field string, data []Value) error {
 }
 
 func (db *MDB) setSingleField(table string, item Item, field string, datum Value) error {
-	switch datum.Sort() {
+	switch datum.Sort {
 	case DBInt:
 		_, err := db.base.Exec(fmt.Sprintf(`UPDATE %s SET %s = ? WHERE Id=?;`, table, field), datum.Int(), item)
 		return err
@@ -740,7 +735,7 @@ func (db *MDB) setListFields(table string, item Item, field string, data []Value
 		return err
 	}
 	for i, _ := range data {
-		switch data[i].Sort() {
+		switch data[i].Sort {
 		case DBInt:
 			_, err = db.base.Exec(fmt.Sprintf(`INSERT INTO %s(%s,Owner) VALUES(?,?)`, tableName, field),
 				data[i].Int(), item)
@@ -821,9 +816,9 @@ const (
 )
 
 type Query struct {
-	Sort     QuerySort
-	Children []Query
-	data     string
+	Sort     QuerySort `json:"sort"`
+	Children []Query   `json:"children"`
+	Data     string    `json:"data"`
 }
 
 func FailedQuery(msg string) *Query {
@@ -928,14 +923,14 @@ func (db *MDB) toSqlSearchTerm(q *Query, table string,
 		if len((*q).Children[0].Children) != 2 {
 			return "", failure("ill-formed NO or EVERY clause, expected field name and search term")
 		}
-		name := (*q).Children[0].Children[0].data
+		name := (*q).Children[0].Children[0].Data
 		if !db.IsListField(table, name) {
 			return "", failure("not a list field '%s', NO and EVERY can only be applied to list fields", name)
 		}
 		switch (*q).Sort {
 		case NoTerm, EveryTerm:
 			*paramStartIdx++
-			searchTerm := (*q).Children[0].Children[1].data
+			searchTerm := (*q).Children[0].Children[1].Data
 			*fieldDescs = append(*fieldDescs, fieldDesc{name, 2, []bool{true, false}, *paramStartIdx})
 			paramStr := "<P" + strconv.Itoa(*paramStartIdx) + ">"
 			maybeNegated := ""
@@ -948,12 +943,12 @@ func (db *MDB) toSqlSearchTerm(q *Query, table string,
 			return "", failure("unsupported search modifier %d (version too low?)", int((*q).Sort))
 		}
 	case FieldName:
-		if !validFieldName.MatchString((*q).data) {
-			return "", failure("invalid field name '%s'", (*q).data)
+		if !validFieldName.MatchString((*q).Data) {
+			return "", failure("invalid field name '%s'", (*q).Data)
 		}
-		return (*q).data, nil
+		return (*q).Data, nil
 	case Term:
-		return fPrintEscape((*q).data), nil
+		return fPrintEscape((*q).Data), nil
 	default:
 		return "", failure("unsupported query element %d (version too low?)", int((*q).Sort))
 	}
@@ -1162,7 +1157,7 @@ func ParseQuery(s string) (*Query, error) {
 // and the items otherwise.
 func (db *MDB) Find(query *Query, limit int64) ([]Item, error) {
 	result := make([]Item, 0)
-	table := (*query).data
+	table := (*query).Data
 	if len((*query).Children) == 0 {
 		return result, failure("incomplete query, only table given")
 	}
@@ -1189,4 +1184,208 @@ func (db *MDB) Find(query *Query, limit int64) ([]Item, error) {
 		}
 	}
 	return result, nil
+}
+
+type CommandID int
+
+const (
+	CmdOpen CommandID = iota + 1
+	CmdAddTable
+	CmdClose
+	CmdCount
+	CmdFind
+	CmdGet
+	CmdGetTables
+	CmdIsListField
+	CmdItemExists
+	CmdListItems
+	CmdNewItem
+	CmdParseFieldValues
+	CmdSet
+	CmdTableExists
+	CmdToSQL
+	CmdFieldIsNull
+)
+
+type CommandDB int
+
+type Command struct {
+	ID        CommandID `json:"id"`
+	DB        CommandDB `json:"dbid"`
+	StrArgs   []string  `json:"strings"`
+	ItemArg   Item      `json:"item"`
+	FieldArgs []Field   `json:"fields"`
+	ValueArgs []Value   `json:"values"`
+	QueryArg  Query     `json:"query"`
+	IntArg    int64     `json:"int"`
+}
+
+type Result struct {
+	S        string
+	Strings  []string
+	Int      int64
+	B        bool
+	Items    []Item
+	Values   []Value
+	HasError bool
+}
+
+var openDBs map[CommandDB]*MDB
+var dbCounter CommandDB
+var mutex sync.RWMutex
+
+const (
+	ErrCannotOpen int64 = iota + 1
+	ErrUnknownDB
+	ErrUnknownCommand
+	ErrAddTableFailed
+	ErrClosingDB
+	ErrCountFailed
+	ErrFindFailed
+	ErrGetFailed
+	ErrGetTablesFailed
+	ErrListItemsFailed
+	ErrNewItemFailed
+	ErrParseFieldValuesFailed
+	ErrSetFailed
+	ErrToSQLFailed
+)
+
+func getDB(cmd *Command) (*MDB, *Result) {
+	mutex.RLock()
+	defer mutex.RUnlock()
+	theDB, ok := openDBs[cmd.DB]
+	if ok {
+		return theDB, nil
+	}
+	r := Result{HasError: true, Int: ErrUnknownDB}
+	r.S = failure("exec failed: db #%d unknown", cmd.DB).Error()
+	return nil, &r
+}
+
+// Exec takes a Command structure and executes it, returning a Result or an error.
+// This function is a large switch, as a wrapper around the more specific API functions.
+// It incurs a runtime penalty and should only used when needed (e.g. when commands
+// have to be marshalled and unmarshalled).
+func Exec(cmd *Command) *Result {
+	var r Result
+	var theDB *MDB
+	var err error
+	var errResult *Result
+
+	if cmd.ID == CmdOpen {
+		mutex.Lock()
+		defer mutex.Unlock()
+		theDB, err := Open(cmd.StrArgs[0], cmd.StrArgs[1])
+		if err != nil {
+			r.HasError = true
+			r.Int = ErrCannotOpen
+			r.S = err.Error()
+			return &r
+		}
+		dbCounter++
+		openDBs[dbCounter] = theDB
+		r.Int = int64(dbCounter)
+		return &r
+	}
+
+	if theDB, errResult = getDB(cmd); errResult != nil {
+		return errResult
+	}
+
+	switch cmd.ID {
+	case CmdAddTable:
+		err = theDB.AddTable(cmd.StrArgs[0], cmd.FieldArgs)
+		if err != nil {
+			r.HasError = true
+			r.Int = ErrAddTableFailed
+			r.S = err.Error()
+		}
+	case CmdClose:
+		err = theDB.Close()
+		mutex.Lock()
+		delete(openDBs, cmd.DB)
+		mutex.Unlock()
+		if err != nil {
+			r.HasError = true
+			r.Int = ErrClosingDB
+			r.S = err.Error()
+		}
+	case CmdCount:
+		r.Int, err = theDB.Count(cmd.StrArgs[0])
+		if err != nil {
+			r.HasError = true
+			r.Int = ErrCountFailed
+			r.S = err.Error()
+		}
+	case CmdFind:
+		r.Items, err = theDB.Find(&(cmd.QueryArg), cmd.IntArg)
+		if err != nil {
+			r.HasError = true
+			r.Int = ErrFindFailed
+			r.S = err.Error()
+		}
+	case CmdGet:
+		r.Values, err = theDB.Get(cmd.StrArgs[0], cmd.ItemArg, cmd.StrArgs[1])
+		if err != nil {
+			r.HasError = true
+			r.Int = ErrGetFailed
+			r.S = err.Error()
+		}
+	case CmdGetTables:
+		r.Strings = theDB.GetTables()
+	case CmdIsListField:
+		r.B = theDB.IsListField(cmd.StrArgs[0], cmd.StrArgs[1])
+	case CmdItemExists:
+		r.B = theDB.ItemExists(cmd.StrArgs[0], cmd.ItemArg)
+	case CmdListItems:
+		r.Items, err = theDB.ListItems(cmd.StrArgs[0], cmd.IntArg)
+		if err != nil {
+			r.HasError = true
+			r.Int = ErrListItemsFailed
+			r.S = err.Error()
+		}
+	case CmdNewItem:
+		item, err := theDB.NewItem(cmd.StrArgs[0])
+		if err != nil {
+			r.HasError = true
+			r.Int = ErrNewItemFailed
+			r.S = err.Error()
+			return &r
+		}
+		r.Items = make([]Item, 1)
+		r.Items[0] = item
+	case CmdParseFieldValues:
+		r.Values, err = theDB.ParseFieldValues(cmd.StrArgs[0], cmd.StrArgs[1], cmd.StrArgs[2:])
+		if err != nil {
+			r.HasError = true
+			r.Int = ErrParseFieldValuesFailed
+			r.S = err.Error()
+		}
+	case CmdSet:
+		err = theDB.Set(cmd.StrArgs[0], cmd.ItemArg, cmd.StrArgs[1], cmd.ValueArgs)
+		if err != nil {
+			r.HasError = true
+			r.Int = ErrSetFailed
+			r.S = err.Error()
+		}
+	case CmdTableExists:
+		r.B = theDB.TableExists(cmd.StrArgs[0])
+	case CmdToSQL:
+		s, err := theDB.ToSql(cmd.StrArgs[0], &cmd.QueryArg, cmd.IntArg)
+		if err != nil {
+			r.HasError = true
+			r.Int = ErrToSQLFailed
+			r.S = err.Error()
+			return &r
+		}
+		r.Strings = make([]string, 1)
+		r.Strings[0] = s
+	case CmdFieldIsNull:
+		r.B = theDB.FieldIsNull(cmd.StrArgs[0], cmd.ItemArg, cmd.StrArgs[1])
+	default:
+		r.HasError = true
+		r.S = failure("exec failed: unhandled command").Error()
+	}
+	return &r
 }
