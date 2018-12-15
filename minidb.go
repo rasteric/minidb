@@ -1,4 +1,9 @@
 // Minidb is a minimalist database. It stores items in tables, where each item has a fixed number of fields.
+// The package has two APIs. The direct API is centered around MDB structures that represent database connections.
+// Functions of MDB call directly the underlying database layer. The other API is slower and should only be used
+// for cases when commands and results have to be serialized. It uses Command structures that are created by functions
+// like OpenCommand, AddTableCommand, etc. These are passed to Exec() which returns a Result structure that is
+// populated with result values.
 package minidb
 
 import (
@@ -10,7 +15,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/rasteric/minidb/parser"
 
@@ -58,7 +62,7 @@ type Field struct {
 	Sort FieldType `json:"sort"`
 }
 
-func failure(msg string, args ...interface{}) error {
+func Fail(msg string, args ...interface{}) error {
 	return errors.New(fmt.Sprintf(msg, args...))
 }
 
@@ -205,7 +209,7 @@ func parseFieldType(ident string) (FieldType, error) {
 		return DBIntList, nil
 	}
 	return DBError,
-		failure("Invalid field type '%s', should be one of int,string,blob,int-list,string-list,blob-list", ident)
+		Fail("Invalid field type '%s', should be one of int,string,blob,int-list,string-list,blob-list", ident)
 }
 
 // ParseFieldDesc parses the given string slice into a []Field slice based on
@@ -213,10 +217,10 @@ func parseFieldType(ident string) (FieldType, error) {
 func ParseFieldDesc(desc []string) ([]Field, error) {
 	result := make([]Field, 0)
 	if len(desc)%2 != 0 {
-		return nil, failure("invalid field descriptions, they must be of the form <type> <fieldname>!")
+		return nil, Fail("invalid field descriptions, they must be of the form <type> <fieldname>!")
 	}
 	if len(desc) == 0 {
-		return nil, failure("no fields specified!")
+		return nil, Fail("no fields specified!")
 	}
 	for i := 0; i < len(desc)-1; i += 2 {
 		ftype, err := parseFieldType(desc[i])
@@ -224,17 +228,17 @@ func ParseFieldDesc(desc []string) ([]Field, error) {
 			return nil, err
 		}
 		if !validFieldName.MatchString(desc[i+1]) {
-			return nil, failure("invalid field name '%s'", desc[i+1])
+			return nil, Fail("invalid field name '%s'", desc[i+1])
 		}
 		if strings.ToLower(desc[i+1]) == "id" {
-			return nil, failure("fields may not be called 'id'!")
+			return nil, Fail("fields may not be called 'id'!")
 		}
 		result = append(result, Field{desc[i+1], ftype})
 	}
 	return result, nil
 }
 
-var errNilDB = failure("db object is nil")
+var errNilDB = Fail("db object is nil")
 
 func (db *MDB) init() error {
 	if db.base == nil {
@@ -269,7 +273,7 @@ func Open(driver string, file string) (*MDB, error) {
 	}
 	db.base = base
 	if err := db.init(); err != nil {
-		return nil, failure("cannot initialize database: %s", err)
+		return nil, Fail("cannot initialize database: %s", err)
 	}
 	return db, nil
 }
@@ -278,7 +282,7 @@ func (db *MDB) Close() error {
 	if db.base != nil {
 		err := db.base.Close()
 		if err != nil {
-			return failure("ERROR Failed to close database - %s.\n", err)
+			return Fail("ERROR Failed to close database - %s.\n", err)
 		}
 	}
 	return nil
@@ -372,19 +376,19 @@ func (db *MDB) IsListField(table string, field string) bool {
 // digit sequence for a 64 bit integer in base 10 format.
 func (db *MDB) ParseFieldValues(table string, field string, data []string) ([]Value, error) {
 	if !validTable.MatchString(table) {
-		return nil, failure("invalid table name '%s'", table)
+		return nil, Fail("invalid table name '%s'", table)
 	}
 	if !db.TableExists(table) {
-		return nil, failure("table '%s' does not exist", table)
+		return nil, Fail("table '%s' does not exist", table)
 	}
 	if !db.FieldExists(table, field) {
-		return nil, failure("field '%s' does not exist in table '%s'", field, table)
+		return nil, Fail("field '%s' does not exist in table '%s'", field, table)
 	}
 	if len(data) == 0 {
-		return nil, failure("no input values given")
+		return nil, Fail("no input values given")
 	}
 	if !db.IsListField(table, field) && len(data) > 1 {
-		return nil, failure("too many input values: expected 1, given %d", len(data))
+		return nil, Fail("too many input values: expected 1, given %d", len(data))
 	}
 	t := ToBaseType(db.MustGetFieldType(table, field))
 	result := make([]Value, 0, len(data))
@@ -393,20 +397,20 @@ func (db *MDB) ParseFieldValues(table string, field string, data []string) ([]Va
 		case DBInt:
 			j, err := strconv.ParseInt(data[i], 10, 64)
 			if err != nil {
-				return nil, failure("type error: expected int, given '%s'", data[i])
+				return nil, Fail("type error: expected int, given '%s'", data[i])
 			}
 			result = append(result, NewInt(j))
 		case DBBlob:
 			b, err := base64.StdEncoding.DecodeString(data[i])
 			if err != nil {
-				return nil, failure("type error: expected binary data in Base64 format but the given data  seems invalid")
+				return nil, Fail("type error: expected binary data in Base64 format but the given data  seems invalid")
 			}
 			result = append(result, NewBytes(b))
 		case DBString:
 			result = append(result, NewString(data[i]))
 		default:
 			return nil,
-				failure("internal error: %s %s expects type %d, which is unknown to this version of minidb",
+				Fail("internal error: %s %s expects type %d, which is unknown to this version of minidb",
 					table, field, t)
 		}
 	}
@@ -418,7 +422,7 @@ func (db *MDB) ParseFieldValues(table string, field string, data []string) ([]Va
 // an underscore.
 func (db *MDB) AddTable(table string, fields []Field) error {
 	if !validTable.MatchString(table) {
-		return failure("invalid table name '%s'", table)
+		return Fail("invalid table name '%s'", table)
 	}
 	// normal fields are just columns
 	toExec := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS "%s" (Id INTEGER PRIMARY KEY`, table)
@@ -430,7 +434,7 @@ func (db *MDB) AddTable(table string, fields []Field) error {
 	toExec += ");"
 	_, err := db.base.Exec(toExec)
 	if err != nil {
-		return failure("cannot create maintenance table: %s", err)
+		return Fail("cannot create maintenance table: %s", err)
 	}
 	// list fields are composite tables with name _Basetable_Fieldname
 	for _, field := range fields {
@@ -444,7 +448,7 @@ FOREIGN KEY(Owner) REFERENCES %s(Id))`, listFieldToTableName(table, field.Name),
 				table)
 			_, err = db.base.Exec(toExec)
 			if err != nil {
-				return failure("cannot create list field %s in table %s: %s", field.Name, table, err)
+				return Fail("cannot create list field %s in table %s: %s", field.Name, table, err)
 			}
 		}
 	}
@@ -452,23 +456,23 @@ FOREIGN KEY(Owner) REFERENCES %s(Id))`, listFieldToTableName(table, field.Name),
 	toExec = "INSERT OR IGNORE INTO _TABLES (Name) VALUES (?)"
 	result, err := db.base.Exec(toExec, table)
 	if err != nil {
-		return failure("failureed to update maintenance table: %s", err)
+		return Fail("Failed to update maintenance table: %s", err)
 	}
 	tableID, err := result.LastInsertId()
 	if err != nil {
-		return failure("failed to update maintenance table: %s", err)
+		return Fail("failed to update maintenance table: %s", err)
 	}
 	for _, field := range fields {
 		_, err := db.base.Exec(`INSERT INTO _COLS (Name,FieldType,Owner) VALUES (?,?,?)`, field.Name, field.Sort, tableID)
 		if err != nil {
-			return failure("cannot insert maintenance field %s for table %s: %s",
+			return Fail("cannot insert maintenance field %s for table %s: %s",
 				field.Name, table, err)
 		}
 		if isListFieldType(field.Sort) {
 			_, err = db.base.Exec(`INSERT INTO _TABLES (Name) VALUES (?)`, listFieldToTableName(table, field.Name))
 		}
 		if err != nil {
-			return failure("cannot insert maintenance list table %s for table %s: %s",
+			return Fail("cannot insert maintenance list table %s for table %s: %s",
 				listFieldToTableName(table, field.Name), table, err)
 		}
 	}
@@ -478,10 +482,10 @@ FOREIGN KEY(Owner) REFERENCES %s(Id))`, listFieldToTableName(table, field.Name),
 // NewItem creates a new item in the table and returns its numerical ID.
 func (db *MDB) NewItem(table string) (Item, error) {
 	if !validTable.MatchString(table) {
-		return 0, failure("invalid table name '%s'", table)
+		return 0, Fail("invalid table name '%s'", table)
 	}
 	if !db.TableExists(table) {
-		return 0, failure("table '%s' does not exist", table)
+		return 0, Fail("table '%s' does not exist", table)
 	}
 
 	toExec := fmt.Sprintf("INSERT INTO %s DEFAULT VALUES;", table)
@@ -499,10 +503,10 @@ func (db *MDB) NewItem(table string) (Item, error) {
 // Count returns the number of items in the table.
 func (db *MDB) Count(table string) (int64, error) {
 	if !validTable.MatchString(table) {
-		return 0, failure("invalid table name '%s'", table)
+		return 0, Fail("invalid table name '%s'", table)
 	}
 	if !db.TableExists(table) {
-		return 0, failure("table '%s' does not exist", table)
+		return 0, Fail("table '%s' does not exist", table)
 	}
 	var result int64
 	err := db.base.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM %s;`, table)).Scan(&result)
@@ -516,10 +520,10 @@ func (db *MDB) Count(table string) (int64, error) {
 func (db *MDB) ListItems(table string, limit int64) ([]Item, error) {
 	empty := make([]Item, 0)
 	if !validTable.MatchString(table) {
-		return empty, failure("invalid table name '%s'", table)
+		return empty, Fail("invalid table name '%s'", table)
 	}
 	if !db.TableExists(table) {
-		return empty, failure("table '%s' does not exist", table)
+		return empty, Fail("table '%s' does not exist", table)
 	}
 	rows, err := db.base.Query(fmt.Sprintf(`SELECT (Id) FROM %s;`, table))
 	if err != nil {
@@ -544,13 +548,13 @@ func (db *MDB) ListItems(table string, limit int64) ([]Item, error) {
 // Get returns the value(s) of a field of an item in a table.
 func (db *MDB) Get(table string, item Item, field string) ([]Value, error) {
 	if !validTable.MatchString(table) {
-		return nil, failure("invalid table name '%s'", table)
+		return nil, Fail("invalid table name '%s'", table)
 	}
 	if !db.TableExists(table) {
-		return nil, failure("table '%s' does not exist", table)
+		return nil, Fail("table '%s' does not exist", table)
 	}
 	if !db.ItemExists(table, item) {
-		return nil, failure("no %s %d", table, item)
+		return nil, Fail("no %s %d", table, item)
 	}
 	if db.IsListField(table, field) {
 		return db.getListField(table, item, field)
@@ -562,11 +566,11 @@ func (db *MDB) Get(table string, item Item, field string) ([]Value, error) {
 func (db *MDB) getSingleField(table string, item Item, field string) ([]Value, error) {
 	if !db.FieldExists(table, field) {
 		return nil,
-			failure(`no field %s in table %s`, field, table)
+			Fail(`no field %s in table %s`, field, table)
 	}
 	if db.FieldIsNull(table, item, field) {
 		return nil,
-			failure(`no value for %s %d %s`, table, item, field)
+			Fail(`no value for %s %d %s`, table, item, field)
 	}
 	t := db.MustGetFieldType(table, field)
 	row := db.base.QueryRow(fmt.Sprintf(`SELECT "%s" FROM "%s" WHERE Id=?;`, field, table), item)
@@ -580,28 +584,28 @@ func (db *MDB) getSingleField(table string, item Item, field string) ([]Value, e
 		err = row.Scan(&strResult)
 	default:
 		return nil,
-			failure("unsupported field type for %s %d %s: %d (try a newer version?)", table, item, field, int(t))
+			Fail("unsupported field type for %s %d %s: %d (try a newer version?)", table, item, field, int(t))
 	}
 	if err == sql.ErrNoRows {
 		return nil,
-			failure("no value for %s %d %s", table, item, field)
+			Fail("no value for %s %d %s", table, item, field)
 	}
 	if err != nil {
 		return nil,
-			failure("cannot find value for %s %d %s: %s", table, item, field, err)
+			Fail("cannot find value for %s %d %s: %s", table, item, field, err)
 	}
 	vslice := make([]Value, 1)
 	switch t {
 	case DBInt:
 		if !intResult.Valid {
 			return nil,
-				failure("no int value for %s %d %s", table, item, field)
+				Fail("no int value for %s %d %s", table, item, field)
 		}
 		vslice[0] = NewInt(intResult.Int64)
 	case DBString, DBBlob:
 		if !strResult.Valid {
 			return nil,
-				failure("no string or blob value for %s %d %s", table, item, field)
+				Fail("no string or blob value for %s %d %s", table, item, field)
 		}
 		vslice[0] = NewString(strResult.String)
 	}
@@ -612,17 +616,17 @@ func (db *MDB) getListField(table string, item Item, field string) ([]Value, err
 	tableName := listFieldToTableName(table, field)
 	if !db.TableExists(tableName) {
 		return nil,
-			failure("list field %s does not exist in table %s", field, table)
+			Fail("list field %s does not exist in table %s", field, table)
 	}
 	if db.IsEmptyListField(tableName, item, field) {
 		return nil,
-			failure("no values for %s %d %s", table, item, field)
+			Fail("no values for %s %d %s", table, item, field)
 	}
 	t := db.MustGetFieldType(table, field)
 	rows, err := db.base.Query(fmt.Sprintf(`SELECT %s FROM "%s" WHERE Owner=?`, field, tableName), item)
 	if err != nil {
 		return nil,
-			failure("cannot find values for %s %d %s: %s", table, item, field, err)
+			Fail("cannot find values for %s %d %s: %s", table, item, field, err)
 	}
 	results := make([]Value, 0)
 	var intResult sql.NullInt64
@@ -633,49 +637,49 @@ func (db *MDB) getListField(table string, item Item, field string) ([]Value, err
 			if err := rows.Scan(&intResult); err != nil {
 				rows.Close()
 				return nil,
-					failure("cannot find int values for %s %d %s: %s", table, item, field, err)
+					Fail("cannot find int values for %s %d %s: %s", table, item, field, err)
 			}
 			if !intResult.Valid {
 				rows.Close()
-				return nil, failure("no int value for %s %d %s", table, item, field)
+				return nil, Fail("no int value for %s %d %s", table, item, field)
 			}
 			results = append(results, NewInt(intResult.Int64))
 		case DBString, DBStringList:
 			if err := rows.Scan(&strResult); err != nil {
 				rows.Close()
 				return nil,
-					failure("cannot find string values for %s %d %s: %s", table, item, field, err)
+					Fail("cannot find string values for %s %d %s: %s", table, item, field, err)
 			}
 			if !strResult.Valid {
 				rows.Close()
 				return nil,
-					failure("no string value for %s %d %s", table, item, field)
+					Fail("no string value for %s %d %s", table, item, field)
 			}
 			results = append(results, NewString(strResult.String))
 		case DBBlob, DBBlobList:
 			if err := rows.Scan(&strResult); err != nil {
 				rows.Close()
 				return nil,
-					failure("cannot find string values for %s %d %s: %s", table, item, field, err)
+					Fail("cannot find string values for %s %d %s: %s", table, item, field, err)
 			}
 			if !strResult.Valid {
 				rows.Close()
 				return nil,
-					failure("no string value for %s %d %s", table, item, field)
+					Fail("no string value for %s %d %s", table, item, field)
 			}
 			b := []byte(strResult.String)
 			results = append(results, NewBytes(b))
 		default:
 			rows.Close()
 			return nil,
-				failure("cannot find values for %s %d %s: unknown field type %d (version too low?)",
+				Fail("cannot find values for %s %d %s: unknown field type %d (version too low?)",
 					table, item, field, t)
 		}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil,
-			failure("cannot find values for %s %d %s: %s", table, item, field, err)
+			Fail("cannot find values for %s %d %s: %s", table, item, field, err)
 	}
 	return results, nil
 }
@@ -684,21 +688,21 @@ func (db *MDB) getListField(table string, item Item, field string) ([]Value, err
 // if the field types don't match the data.
 func (db *MDB) Set(table string, item Item, field string, data []Value) error {
 	if !validTable.MatchString(table) {
-		return failure("invalid table name '%s'", table)
+		return Fail("invalid table name '%s'", table)
 	}
 	if !db.TableExists(table) {
-		return failure("table '%s' does not exist", table)
+		return Fail("table '%s' does not exist", table)
 	}
 	if !db.ItemExists(table, item) {
-		return failure("no %s %d", table, item)
+		return Fail("no %s %d", table, item)
 	}
 	if len(data) == 0 {
-		return failure("no value given to set in %s %d %s", table, item, field)
+		return Fail("no value given to set in %s %d %s", table, item, field)
 	}
 	t := ToBaseType(db.MustGetFieldType(table, field))
 	for i, _ := range data {
 		if data[i].Sort != t {
-			return failure("type error %s %d %s: expected %d, encountered %d",
+			return Fail("type error %s %d %s: expected %d, encountered %d",
 				table, item, field, t, data[i].Sort)
 		}
 	}
@@ -706,7 +710,7 @@ func (db *MDB) Set(table string, item Item, field string, data []Value) error {
 		return db.setListFields(table, item, field, data)
 	}
 	if len(data) > 1 {
-		return failure("attempt to set %d values in single field %s %d %s, should be just one value",
+		return Fail("attempt to set %d values in single field %s %d %s, should be just one value",
 			len(data), table, item, field)
 	}
 	return db.setSingleField(table, item, field, data[0])
@@ -727,7 +731,7 @@ func (db *MDB) setListFields(table string, item Item, field string, data []Value
 	var err error
 	tableName := listFieldToTableName(table, field)
 	if !db.TableExists(tableName) {
-		return failure("internal error, table %s does not exist (database has been tampered)",
+		return Fail("internal error, table %s does not exist (database has been tampered)",
 			tableName)
 	}
 	_, err = db.base.Exec(fmt.Sprintf(`DELETE FROM %s WHERE Owner=?`, tableName), item)
@@ -753,7 +757,7 @@ func (db *MDB) setListFields(table string, item Item, field string, data []Value
 // GetFields returns the fields that belong to a table, including list fields.
 func (db *MDB) GetFields(table string) ([]Field, error) {
 	if !db.TableExists(table) {
-		return nil, failure("table '%s' does not exist", table)
+		return nil, Fail("table '%s' does not exist", table)
 	}
 	id, err := db.getTableId(table)
 	if err != nil {
@@ -855,26 +859,26 @@ func (db *MDB) toSqlSearchTerm(q *Query, table string,
 	switch (*q).Sort {
 	case Clause:
 		if (*q).Children == nil {
-			return "", failure("empty clause")
+			return "", Fail("empty clause")
 		}
 		if len((*q).Children) < 2 {
-			return "", failure("missing argument in clause")
+			return "", Fail("missing argument in clause")
 		}
 		if len((*q).Children) > 2 {
-			return "", failure("too many arguments in clause")
+			return "", Fail("too many arguments in clause")
 		}
 		if (*q).Children[0].Sort != FieldName {
-			return "", failure("first part of a clause must be the field")
+			return "", Fail("first part of a clause must be the field")
 		}
 		if (*q).Children[1].Sort != Term {
-			return "", failure("second part of a clause must be the search term")
+			return "", Fail("second part of a clause must be the search term")
 		}
 		fieldName, err := db.toSqlSearchTerm(&(*q).Children[0], table, fieldDescs, paramStartIdx)
 		if err != nil {
 			return "", err
 		}
 		if !db.FieldExists(table, fieldName) {
-			return "", failure("field '%s' does not exist in table '%s'", fieldName, table)
+			return "", Fail("field '%s' does not exist in table '%s'", fieldName, table)
 		}
 		searchTerm, err := db.toSqlSearchTerm(&(*q).Children[1], table, fieldDescs, paramStartIdx)
 		*paramStartIdx++
@@ -894,10 +898,10 @@ func (db *MDB) toSqlSearchTerm(q *Query, table string,
 			connective = "OR"
 		}
 		if len((*q).Children) < 2 {
-			return "", failure("missing argument")
+			return "", Fail("missing argument")
 		}
 		if len((*q).Children) > 2 {
-			return "", failure("too many arguments")
+			return "", Fail("too many arguments")
 		}
 		clause1, err := db.toSqlSearchTerm(&(*q).Children[0], table, fieldDescs, paramStartIdx)
 		if err != nil {
@@ -910,7 +914,7 @@ func (db *MDB) toSqlSearchTerm(q *Query, table string,
 		return fmt.Sprintf(`(%s) %s (%s)`, clause1, connective, clause2), nil
 	case LogicalNot:
 		if len((*q).Children) != 1 {
-			return "", failure("NOT takes only one argument, given %d", len((*q).Children))
+			return "", Fail("NOT takes only one argument, given %d", len((*q).Children))
 		}
 		clause, err := db.toSqlSearchTerm(&(*q).Children[0], table, fieldDescs, paramStartIdx)
 		if err != nil {
@@ -919,17 +923,17 @@ func (db *MDB) toSqlSearchTerm(q *Query, table string,
 		return fmt.Sprintf(`NOT (%s)`, clause), nil
 	case NoTerm, EveryTerm:
 		if len((*q).Children) == 0 {
-			return "", failure("missing argument")
+			return "", Fail("missing argument")
 		}
 		if len((*q).Children) > 1 {
-			return "", failure("NO and EVERY take only one argument, given %d", len((*q).Children))
+			return "", Fail("NO and EVERY take only one argument, given %d", len((*q).Children))
 		}
 		if len((*q).Children[0].Children) != 2 {
-			return "", failure("ill-formed NO or EVERY clause, expected field name and search term")
+			return "", Fail("ill-formed NO or EVERY clause, expected field name and search term")
 		}
 		name := (*q).Children[0].Children[0].Data
 		if !db.IsListField(table, name) {
-			return "", failure("not a list field '%s', NO and EVERY can only be applied to list fields", name)
+			return "", Fail("not a list field '%s', NO and EVERY can only be applied to list fields", name)
 		}
 		switch (*q).Sort {
 		case NoTerm, EveryTerm:
@@ -944,17 +948,17 @@ func (db *MDB) toSqlSearchTerm(q *Query, table string,
 			return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM %s AS "+paramStr+" WHERE "+paramStr+".%s"+maybeNegated+" LIKE '%s' AND %s.Id="+paramStr+".Owner)", listFieldToTableName(table, name), name, searchTerm, table), nil
 
 		default:
-			return "", failure("unsupported search modifier %d (version too low?)", int((*q).Sort))
+			return "", Fail("unsupported search modifier %d (version too low?)", int((*q).Sort))
 		}
 	case FieldName:
 		if !validFieldName.MatchString((*q).Data) {
-			return "", failure("invalid field name '%s'", (*q).Data)
+			return "", Fail("invalid field name '%s'", (*q).Data)
 		}
 		return (*q).Data, nil
 	case Term:
 		return fPrintEscape((*q).Data), nil
 	default:
-		return "", failure("unsupported query element %d (version too low?)", int((*q).Sort))
+		return "", Fail("unsupported query element %d (version too low?)", int((*q).Sort))
 	}
 }
 
@@ -962,7 +966,7 @@ func (db *MDB) toSqlSearchTerm(q *Query, table string,
 // or returns an error if the query structure is ill-formed.
 func (db *MDB) ToSql(table string, query *Query, limit int64) (string, error) {
 	if !db.TableExists(table) {
-		return "", failure("table '%s' does not exist", table)
+		return "", Fail("table '%s' does not exist", table)
 	}
 	fieldDescs := make([]fieldDesc, 0)
 	c := 0
@@ -972,7 +976,7 @@ func (db *MDB) ToSql(table string, query *Query, limit int64) (string, error) {
 	}
 	for _, field := range fieldDescs {
 		if !db.FieldExists(table, field.name) {
-			return "", failure("invalid query, %s %s field does not exist", table, field.name)
+			return "", Fail("invalid query, %s %s field does not exist", table, field.name)
 		}
 	}
 	joins := ""
@@ -1148,10 +1152,10 @@ func ParseQuery(s string) (*Query, error) {
 	listener := NewMdbListener()
 	antlr.ParseTreeWalkerDefault.Walk(listener, tree)
 	if listener.parseFailed == true {
-		return nil, failure("failed to parse query '%s'", s)
+		return nil, Fail("failed to parse query '%s'", s)
 	}
 	if len(*listener.stack) == 0 {
-		return nil, failure("incomplete query '%s'", s)
+		return nil, Fail("incomplete query '%s'", s)
 	}
 	result := listener.Pop()
 	return result, nil
@@ -1163,16 +1167,16 @@ func (db *MDB) Find(query *Query, limit int64) ([]Item, error) {
 	result := make([]Item, 0)
 	table := (*query).Data
 	if len((*query).Children) == 0 {
-		return result, failure("incomplete query, only table given")
+		return result, Fail("incomplete query, only table given")
 	}
 	query = &query.Children[0]
 	toExec, err := db.ToSql(table, query, limit)
 	// fmt.Println(toExec) // the final query, for debugging
 	if err != nil {
-		return result, failure("invalid query - %s", err)
+		return result, Fail("invalid query - %s", err)
 	}
 	if !db.TableExists(table) {
-		return result, failure("invalid query - table '%s' does not exist", table)
+		return result, Fail("invalid query - table '%s' does not exist", table)
 	}
 
 	var rows *sql.Rows
@@ -1188,221 +1192,4 @@ func (db *MDB) Find(query *Query, limit int64) ([]Item, error) {
 		}
 	}
 	return result, nil
-}
-
-// Represents a command in Exec().
-type CommandID int
-
-// The actual Exec() CommandID values. Names mirror the respective functions.
-const (
-	CmdOpen CommandID = iota + 1
-	CmdAddTable
-	CmdClose
-	CmdCount
-	CmdFind
-	CmdGet
-	CmdGetTables
-	CmdIsListField
-	CmdItemExists
-	CmdListItems
-	CmdNewItem
-	CmdParseFieldValues
-	CmdSet
-	CmdTableExists
-	CmdToSQL
-	CmdFieldIsNull
-)
-
-// A database that has been opened.
-type CommandDB int
-
-// Command structures contains all information needed to execute an arbitrary command.
-// Generally, string arguments are passed as subsequent StringArgs, and the same for other
-// lists like FieldArgs. Fitting arguments are added in the order in which they occur in the respective
-// function. The remaining fields are left empty.
-type Command struct {
-	ID        CommandID `json:"id"`
-	DB        CommandDB `json:"dbid"`
-	StrArgs   []string  `json:"strings"`
-	ItemArg   Item      `json:"item"`
-	FieldArgs []Field   `json:"fields"`
-	ValueArgs []Value   `json:"values"`
-	QueryArg  Query     `json:"query"`
-	IntArg    int64     `json:"int"`
-}
-
-// Result is a structure representing the result of a command execution via Exec().
-// If an error has occurred, then HasError is true and the Int and S fields contain
-// the numeric error code and the error message string. Otherwise the respective fields
-// are filled in, as corresponding to the return value(s) of the respective function call.
-type Result struct {
-	S        string   `json:"str"`
-	Strings  []string `json:"strings"`
-	Int      int64    `json:"int64"`
-	B        bool     `json:"bool"`
-	Items    []Item   `json:"items"`
-	Values   []Value  `json:"values"`
-	HasError bool     `json:"iserror"`
-}
-
-var openDBs map[CommandDB]*MDB
-var dbCounter CommandDB
-var mutex sync.RWMutex
-
-// Numeric error codes returned by Exec() in a Result structure's Int field.
-const (
-	NoErr int64 = iota + 1
-	ErrCannotOpen
-	ErrUnknownDB
-	ErrUnknownCommand
-	ErrAddTableFailed
-	ErrClosingDB
-	ErrCountFailed
-	ErrFindFailed
-	ErrGetFailed
-	ErrGetTablesFailed
-	ErrListItemsFailed
-	ErrNewItemFailed
-	ErrParseFieldValuesFailed
-	ErrSetFailed
-	ErrToSQLFailed
-)
-
-func getDB(cmd *Command) (*MDB, *Result) {
-	mutex.RLock()
-	defer mutex.RUnlock()
-	theDB, ok := openDBs[cmd.DB]
-	if ok {
-		return theDB, nil
-	}
-	r := Result{HasError: true, Int: ErrUnknownDB}
-	r.S = failure("exec failed: db #%d unknown", cmd.DB).Error()
-	return nil, &r
-}
-
-// Exec takes a Command structure and executes it, returning a Result or an error.
-// This function is a large switch, as a wrapper around the more specific API functions.
-// It incurs a runtime penalty and should only used when needed (e.g. when commands
-// have to be marshalled and unmarshalled).
-func Exec(cmd *Command) *Result {
-	var r Result
-	var theDB *MDB
-	var err error
-	var errResult *Result
-
-	if cmd.ID == CmdOpen {
-		mutex.Lock()
-		defer mutex.Unlock()
-		theDB, err := Open(cmd.StrArgs[0], cmd.StrArgs[1])
-		if err != nil {
-			r.HasError = true
-			r.Int = ErrCannotOpen
-			r.S = err.Error()
-			return &r
-		}
-		dbCounter++
-		openDBs[dbCounter] = theDB
-		r.Int = int64(dbCounter)
-		return &r
-	}
-
-	if theDB, errResult = getDB(cmd); errResult != nil {
-		return errResult
-	}
-
-	switch cmd.ID {
-	case CmdAddTable:
-		err = theDB.AddTable(cmd.StrArgs[0], cmd.FieldArgs)
-		if err != nil {
-			r.HasError = true
-			r.Int = ErrAddTableFailed
-			r.S = err.Error()
-		}
-	case CmdClose:
-		err = theDB.Close()
-		mutex.Lock()
-		delete(openDBs, cmd.DB)
-		mutex.Unlock()
-		if err != nil {
-			r.HasError = true
-			r.Int = ErrClosingDB
-			r.S = err.Error()
-		}
-	case CmdCount:
-		r.Int, err = theDB.Count(cmd.StrArgs[0])
-		if err != nil {
-			r.HasError = true
-			r.Int = ErrCountFailed
-			r.S = err.Error()
-		}
-	case CmdFind:
-		r.Items, err = theDB.Find(&(cmd.QueryArg), cmd.IntArg)
-		if err != nil {
-			r.HasError = true
-			r.Int = ErrFindFailed
-			r.S = err.Error()
-		}
-	case CmdGet:
-		r.Values, err = theDB.Get(cmd.StrArgs[0], cmd.ItemArg, cmd.StrArgs[1])
-		if err != nil {
-			r.HasError = true
-			r.Int = ErrGetFailed
-			r.S = err.Error()
-		}
-	case CmdGetTables:
-		r.Strings = theDB.GetTables()
-	case CmdIsListField:
-		r.B = theDB.IsListField(cmd.StrArgs[0], cmd.StrArgs[1])
-	case CmdItemExists:
-		r.B = theDB.ItemExists(cmd.StrArgs[0], cmd.ItemArg)
-	case CmdListItems:
-		r.Items, err = theDB.ListItems(cmd.StrArgs[0], cmd.IntArg)
-		if err != nil {
-			r.HasError = true
-			r.Int = ErrListItemsFailed
-			r.S = err.Error()
-		}
-	case CmdNewItem:
-		item, err := theDB.NewItem(cmd.StrArgs[0])
-		if err != nil {
-			r.HasError = true
-			r.Int = ErrNewItemFailed
-			r.S = err.Error()
-			return &r
-		}
-		r.Items = make([]Item, 1)
-		r.Items[0] = item
-	case CmdParseFieldValues:
-		r.Values, err = theDB.ParseFieldValues(cmd.StrArgs[0], cmd.StrArgs[1], cmd.StrArgs[2:])
-		if err != nil {
-			r.HasError = true
-			r.Int = ErrParseFieldValuesFailed
-			r.S = err.Error()
-		}
-	case CmdSet:
-		err = theDB.Set(cmd.StrArgs[0], cmd.ItemArg, cmd.StrArgs[1], cmd.ValueArgs)
-		if err != nil {
-			r.HasError = true
-			r.Int = ErrSetFailed
-			r.S = err.Error()
-		}
-	case CmdTableExists:
-		r.B = theDB.TableExists(cmd.StrArgs[0])
-	case CmdToSQL:
-		s, err := theDB.ToSql(cmd.StrArgs[0], &cmd.QueryArg, cmd.IntArg)
-		if err != nil {
-			r.HasError = true
-			r.Int = ErrToSQLFailed
-			r.S = err.Error()
-			return &r
-		}
-		r.Strings = make([]string, 1)
-		r.Strings[0] = s
-	case CmdFieldIsNull:
-		r.B = theDB.FieldIsNull(cmd.StrArgs[0], cmd.ItemArg, cmd.StrArgs[1])
-	default:
-		r.HasError = true
-		r.S = failure("exec failed: unhandled command").Error()
-	}
-	return &r
 }

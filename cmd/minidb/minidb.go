@@ -3,30 +3,67 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 
 	minidb "github.com/rasteric/minidb"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
+	mangos "nanomsg.org/go/mangos/v2"
+	"nanomsg.org/go/mangos/v2/protocol/req"
+
+	// register transports
+	_ "nanomsg.org/go/mangos/v2/transport/all"
 )
 
 const (
-	OK = iota + 1
-	ERR_CannotOpenDB
-	ERR_InvalidFields
-	ERR_FailedClose
-	ERR_CannotAddTable
-	ERR_CannotCreateItem
-	ERR_NotFound
-	ERR_SetFailed
-	ERR_CountFailed
-	ERR_ListFailed
-	ERR_FailedListFields
-	ERR_SetTypeError
-	ERR_SearchFail
-	ERR_SyntaxError
+	ErrNone = iota + 1
+	ErrCannotOpenDB
+	ErrInvalidFields
+	ErrFailedClose
+	ErrCannotAddTable
+	ErrCannotCreateItem
+	ErrNotFound
+	ErrSetFailed
+	ErrCountFailed
+	ErrListFailed
+	ErrFailedListFields
+	ErrSetTypeError
+	ErrSearchFail
+	ErrSyntaxError
+	ErrNoServerExecutable
+	ErrCannotStartServerExecutable
+	ErrNoSocket
+	ErrNoConnection
+	ErrIO
 )
+
+func sendCommand(sock mangos.Socket, cmd *minidb.Command) (*minidb.Result, error) {
+	msg, err := json.Marshal(&cmd)
+	if err != nil {
+		return nil, err
+	}
+	err = sock.Send(msg)
+	if err != nil {
+		return nil, err
+	}
+	if msg, err = sock.Recv(); err != nil {
+		return nil, err
+	}
+	reply := minidb.Result{}
+	err = json.Unmarshal(msg, &reply)
+	if err != nil {
+		return nil, err
+	}
+	if reply.HasError {
+		return nil, errors.New(reply.Str)
+	}
+	return &reply, nil
+}
 
 func printItems(items []minidb.Item) {
 	if len(items) == 0 {
@@ -40,6 +77,11 @@ func printItems(items []minidb.Item) {
 		s += fmt.Sprintf("%d", item)
 	}
 	fmt.Printf("%s\n", s)
+}
+
+func die(errCode int, msg string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, "ERROR "+msg, args...)
+	os.Exit(errCode)
 }
 
 func main() {
@@ -85,41 +127,95 @@ func main() {
 	findEscape := app.Flag("escape", "The escape character for find queries.").String()
 	findLimit := app.Flag("limit", "The maximum number of items to return (omit=no limit).").Int64()
 
+	serverTimeout := app.Flag("keep-up", "Time to keep the database server running before it needs to be restarted. Use 'forever' to keep it running.").String()
+	serverExecutable := app.Flag("server", "Path to the minidb-server executable.").String()
+	serverURL := app.Flag("connection", "Mangos-compatible transport URL to connect to the server executable. If this is not provided, tcp://localhost:7873 is used.").String()
+
 	command := kingpin.MustParse(app.Parse(os.Args[1:]))
 
-	// open the db
+	var keepUp int = 10 * 60
+	var noTimeout bool
+	if strings.ToLower(*serverTimeout) == "forever" {
+		noTimeout = true
+	}
+	timeout, err := strconv.Atoi(*serverTimeout)
+	if err == nil {
+		if timeout <= 0 {
+			die(ErrSyntaxError, "keep-up seconds need to be a positive integer or 'forever'.\n")
+		}
+		keepUp = timeout
+	}
+
+	// fix dbfile
 	if *dbfile == "" {
 		*dbfile = "db.sqlite"
 	}
-	db, err := minidb.Open("sqlite3", *dbfile)
+
+	// run the server executable if needed
+	_, err = FindProcessByName("mdbserve")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR Unable to open database '%s' - %s.\n", *dbfile, err)
-		os.Exit(ERR_CannotOpenDB)
+		if *serverExecutable == "" {
+			*serverExecutable = "../mdbserve/mdbserve"
+			if _, err := os.Stat(*serverExecutable); os.IsNotExist(err) {
+				*serverExecutable, err = exec.LookPath("mdbserve")
+				if err != nil {
+					die(ErrNoServerExecutable, "cannot find server executable!\n")
+				}
+			}
+		}
+		var timeoutArg string
+		if noTimeout {
+			timeoutArg = "none"
+		} else {
+			timeoutArg = strconv.Itoa(keepUp)
+		}
+		cmd := exec.Command(*serverExecutable, "timeout", timeoutArg)
+		if err := cmd.Start(); err != nil {
+			die(ErrCannotStartServerExecutable, "cannot start server executable: %s.\n", err)
+		}
 	}
-	defer db.Close()
+
+	// open the connection
+	var sock mangos.Socket
+	if sock, err = req.NewSocket(); err != nil {
+		die(ErrNoSocket, "cannot get a socket to connect to server: %s.\n", err)
+	}
+	defer sock.Close()
+	if *serverURL == "" {
+		*serverURL = "tcp://localhost:7873"
+	}
+	if err := sock.Dial(*serverURL); err != nil {
+		die(ErrNoConnection, "cannot connect to server executable: %s.\n", err)
+	}
+	var result *minidb.Result
+	if result, err = sendCommand(sock, minidb.OpenCommand("sqlite3", *dbfile)); err != nil {
+		die(ErrIO, "could not open database: %s\n", err)
+	}
+	theDB := minidb.CommandDB(*dbfile)
 
 	switch command {
 	case table.FullCommand():
 		fields, err := minidb.ParseFieldDesc(*tableFields)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR Invalid table or field descriptions - %s.\n", err)
-			os.Exit(ERR_InvalidFields)
+			die(ErrInvalidFields, "invalid table or field descriptions - %s.\n", err)
 		}
-		err = db.AddTable(*tableName, fields)
+		result, err = sendCommand(sock, minidb.AddTableCommand(theDB, *tableName, fields))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR Unable to create table - %s.\n", err)
-			os.Exit(ERR_CannotAddTable)
+			die(ErrCannotAddTable, "unable to create table - %s.\n", err)
 		}
 	case new.FullCommand():
-		id, err := db.NewItem(*newTable)
+		result, err := sendCommand(sock, minidb.NewItemCommand(theDB, *newTable))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR Unable to create item - %s.\n", err)
-			os.Exit(ERR_CannotCreateItem)
+			die(ErrCannotCreateItem, "unable to create item - %s.\n", err)
 		}
-		fmt.Printf("%d\n", id)
+		fmt.Printf("%d\n", result.Items[0])
 	case get.FullCommand():
 		if len(*getFields) == 0 {
-			fields, _ := db.GetFields(*getTable)
+			result, err := sendCommand(sock, minidb.GetFieldsCommand(theDB, *getTable))
+			if err != nil {
+				die(ErrIO, "cannot get fields: %s.\n", err)
+			}
+			fields := result.Fields
 			fieldNames := make([]string, 0)
 			for i, _ := range fields {
 				fieldNames = append(fieldNames, (fields)[i].Name)
@@ -128,61 +224,60 @@ func main() {
 		}
 		errCount := 0
 		for i, _ := range *getFields {
-			data, err := db.Get(*getTable, minidb.Item(*getItem), (*getFields)[i])
+			result, err := sendCommand(sock, minidb.GetCommand(theDB, *getTable, minidb.Item(*getItem), (*getFields)[i]))
 			if err != nil {
 				if *dbview == "titled" {
 					fmt.Printf("%s %d %s: 0\n", *getTable, *getItem, (*getFields)[i])
 				}
-				fmt.Fprintf(os.Stderr, "ERROR Not found - %s.\n", err)
+				fmt.Fprintf(os.Stderr, "not found - %s.\n", err)
 				errCount++
 			} else {
 				if *dbview == "titled" {
-					fmt.Printf("%s %d %s: %d\n", *getTable, *getItem, (*getFields)[i], len(data))
+					fmt.Printf("%s %d %s: %d\n", *getTable, *getItem, (*getFields)[i], len(result.Values))
 				}
-				for j, _ := range data {
-					fmt.Printf("%s\n", data[j].String())
+				for j, _ := range result.Values {
+					fmt.Printf("%s\n", result.Values[j].String())
 				}
 			}
 		}
 		if errCount > 0 {
-			os.Exit(ERR_NotFound)
+			os.Exit(ErrNotFound)
 		}
 	case set.FullCommand():
-		data, err := db.ParseFieldValues(*setTable, *setField, *setValues)
+		result, err := sendCommand(sock, minidb.ParseFieldValuesCommand(theDB, *setTable, *setField, *setValues))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR Set failed - %s\n", err)
-			os.Exit(ERR_SetTypeError)
+			die(ErrSetTypeError, "set failed - %s\n", err)
 		}
-		err = db.Set(*setTable, minidb.Item(*setItem), *setField, data)
+		_, err = sendCommand(sock,
+			minidb.SetCommand(theDB, *setTable, minidb.Item(*setItem), *setField, result.Values))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR Set failed - %s\n", err)
-			os.Exit(ERR_SetFailed)
+			die(ErrSetFailed, "set failed - %s\n", err)
 		}
 	case count.FullCommand():
-		c, err := db.Count(*countTable)
+		result, err := sendCommand(sock, minidb.CountCommand(theDB, *countTable))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR - %s\n", err)
-			os.Exit(ERR_CountFailed)
+			die(ErrCountFailed, "%s\n", err)
 		}
-		fmt.Printf("%d\n", c)
+		fmt.Printf("%d\n", result.Int)
 	case list.FullCommand():
-		results, err := db.ListItems(*listTable, *listLimit)
+		result, err := sendCommand(sock, minidb.ListItemsCommand(theDB, *listTable, *listLimit))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR - %s\n", err)
-			os.Exit(ERR_ListFailed)
+			die(ErrListFailed, "%s\n", err)
 		}
-		printItems(results)
+		printItems(result.Items)
 	case listFields.FullCommand():
-		fields, err := db.GetFields(*listFieldsTable)
+		result, err := sendCommand(sock, minidb.GetFieldsCommand(theDB, *listFieldsTable))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR Cannot list fields for '%s' - %s.\n", *listFieldsTable, err)
-			os.Exit(ERR_FailedListFields)
+			die(ErrFailedListFields, "cannot list fields for '%s' - %s.\n", *listFieldsTable, err)
 		}
-		for i, _ := range fields {
-			fmt.Printf("%s %s\n", minidb.GetUserTypeString(fields[i].Sort), fields[i].Name)
+		for i, _ := range result.Fields {
+			fmt.Printf("%s %s\n", minidb.GetUserTypeString(result.Fields[i].Sort), result.Fields[i].Name)
 		}
 	case listTables.FullCommand():
-		tables := db.GetTables()
+		if result, err = sendCommand(sock, minidb.GetTablesCommand(theDB)); err != nil {
+			die(ErrIO, "transport failed: %s\n", err)
+		}
+		tables := result.Strings
 		for i, _ := range tables {
 			if i > 0 {
 				fmt.Print(" ")
@@ -195,14 +290,12 @@ func main() {
 		s := strings.Join(*findQuery, " ")
 		query, err := minidb.ParseQuery(s)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR Syntax error - %s.\n", err)
-			os.Exit(ERR_SyntaxError)
+			die(ErrSyntaxError, "syntax error - %s.\n", err)
 		}
-		found, err := db.Find(query, *findLimit)
+		result, err := sendCommand(sock, minidb.FindCommand(theDB, query, *findLimit))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR Search '%s' failed - %s.\n", *findQuery, err)
-			os.Exit(ERR_SearchFail)
+			die(ErrSearchFail, "search Search '%s' failed - %s.\n", *findQuery, err)
 		}
-		printItems(found)
+		printItems(result.Items)
 	}
 }
