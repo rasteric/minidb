@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	minidb "github.com/rasteric/minidb"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
@@ -130,10 +131,11 @@ func main() {
 	serverTimeout := app.Flag("keep-up", "Time to keep the database server running before it needs to be restarted. Use 'forever' to keep it running.").String()
 	serverExecutable := app.Flag("server", "Path to the minidb-server executable.").String()
 	serverURL := app.Flag("connection", "Mangos-compatible transport URL to connect to the server executable. If this is not provided, tcp://localhost:7873 is used.").String()
+	serverConnectTrials := app.Flag("connection-trials", "Number of times minidb tries to connect to the database server process before it gives up.").Int32()
 
 	command := kingpin.MustParse(app.Parse(os.Args[1:]))
 
-	var keepUp int = 10 * 60
+	var keepUp int = 600
 	var noTimeout bool
 	if strings.ToLower(*serverTimeout) == "forever" {
 		noTimeout = true
@@ -144,6 +146,10 @@ func main() {
 			die(ErrSyntaxError, "keep-up seconds need to be a positive integer or 'forever'.\n")
 		}
 		keepUp = timeout
+	}
+	var connectTrials int32 = 10
+	if *serverConnectTrials > 0 {
+		connectTrials = *serverConnectTrials
 	}
 
 	// fix dbfile
@@ -184,9 +190,21 @@ func main() {
 	if *serverURL == "" {
 		*serverURL = "tcp://localhost:7873"
 	}
-	if err := sock.Dial(*serverURL); err != nil {
+	// we try dialing several times before giving up
+	var c int32 = 0
+	success := false
+	for c < connectTrials {
+		if err = sock.Dial(*serverURL); err == nil {
+			success = true
+			break
+		}
+		c++
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !success {
 		die(ErrNoConnection, "cannot connect to server executable: %s.\n", err)
 	}
+	// connection established, now send the open command
 	var result *minidb.Result
 	if result, err = sendCommand(sock, minidb.OpenCommand("sqlite3", *dbfile)); err != nil {
 		die(ErrIO, "could not open database: %s\n", err)

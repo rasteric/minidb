@@ -67,6 +67,7 @@ type Result struct {
 }
 
 var openDBs map[CommandDB]*MDB
+var connections map[CommandDB]int
 
 var mutex sync.RWMutex
 
@@ -120,14 +121,19 @@ func Exec(cmd *Command) *Result {
 	if cmd.ID == CmdOpen {
 		mutex.Lock()
 		defer mutex.Unlock()
-		theDB, err := Open(cmd.StrArgs[0], cmd.StrArgs[1])
-		if err != nil {
-			r.HasError = true
-			r.Int = ErrCannotOpen
-			r.Str = err.Error()
-			return &r
+		if _, ok := openDBs[CommandDB(cmd.StrArgs[1])]; ok {
+			connections[CommandDB(cmd.StrArgs[1])] += 1
+		} else {
+			theDB, err := Open(cmd.StrArgs[0], cmd.StrArgs[1])
+			if err != nil {
+				r.HasError = true
+				r.Int = ErrCannotOpen
+				r.Str = err.Error()
+				return &r
+			}
+			openDBs[CommandDB(cmd.StrArgs[1])] = theDB
+			connections[CommandDB(cmd.StrArgs[1])] = 1
 		}
-		openDBs[CommandDB(cmd.StrArgs[1])] = theDB
 		return &r
 	}
 
@@ -144,9 +150,15 @@ func Exec(cmd *Command) *Result {
 			r.Str = err.Error()
 		}
 	case CmdClose:
-		err = theDB.Close()
+		err = nil
 		mutex.Lock()
-		delete(openDBs, cmd.DB)
+		if connections[cmd.DB] == 1 {
+			err = theDB.Close()
+			delete(openDBs, cmd.DB)
+			delete(connections, cmd.DB)
+		} else {
+			connections[cmd.DB] -= 1
+		}
 		mutex.Unlock()
 		if err != nil {
 			r.HasError = true
