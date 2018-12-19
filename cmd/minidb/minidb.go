@@ -128,14 +128,14 @@ func main() {
 	findEscape := app.Flag("escape", "The escape character for find queries.").String()
 	findLimit := app.Flag("limit", "The maximum number of items to return (omit=no limit).").Int64()
 
-	serverTimeout := app.Flag("keep-up", "Time to keep the database server running before it needs to be restarted. Use 'forever' to keep it running.").String()
+	serverTimeout := app.Flag("keep-up", "Time in seconds to keep the database server running before it needs to be restarted. Use 'forever' to keep it running. The default value is 300 (5 minutes).").String()
 	serverExecutable := app.Flag("server", "Path to the minidb-server executable.").String()
 	serverURL := app.Flag("connection", "Mangos-compatible transport URL to connect to the server executable. If this is not provided, tcp://localhost:7873 is used.").String()
 	serverConnectTrials := app.Flag("connection-trials", "Number of times minidb tries to connect to the database server process before it gives up.").Int32()
 
 	command := kingpin.MustParse(app.Parse(os.Args[1:]))
 
-	var keepUp int = 600
+	var keepUp int = 300
 	var noTimeout bool
 	if strings.ToLower(*serverTimeout) == "forever" {
 		noTimeout = true
@@ -147,7 +147,7 @@ func main() {
 		}
 		keepUp = timeout
 	}
-	var connectTrials int32 = 10
+	var connectTrials int32 = 20
 	if *serverConnectTrials > 0 {
 		connectTrials = *serverConnectTrials
 	}
@@ -179,6 +179,7 @@ func main() {
 		if err := cmd.Start(); err != nil {
 			die(ErrCannotStartServerExecutable, "cannot start server executable: %s.\n", err)
 		}
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	// open the connection
@@ -194,16 +195,19 @@ func main() {
 	var c int32 = 0
 	success := false
 	for c < connectTrials {
+		sock.SetOption(mangos.OptionReconnectTime, 10)
+		sock.SetOption(mangos.OptionMaxReconnectTime, 100)
 		if err = sock.Dial(*serverURL); err == nil {
 			success = true
 			break
 		}
 		c++
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 	}
 	if !success {
 		die(ErrNoConnection, "cannot connect to server executable: %s.\n", err)
 	}
+
 	// connection established, now send the open command
 	var result *minidb.Result
 	if result, err = sendCommand(sock, minidb.OpenCommand("sqlite3", *dbfile)); err != nil {

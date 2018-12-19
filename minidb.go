@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/rasteric/minidb/parser"
 
@@ -41,6 +42,8 @@ const (
 	DBIntList
 	DBStringList
 	DBBlobList
+	DBDate
+	DBDateList
 )
 
 // ToBaseType converts a list type into the list's base type. A non-list type remains unchanged.
@@ -52,6 +55,8 @@ func ToBaseType(t FieldType) FieldType {
 		return DBString
 	case DBBlobList:
 		return DBBlob
+	case DBDateList:
+		return DBDate
 	default:
 		return t
 	}
@@ -91,7 +96,7 @@ func (v *Value) String() string {
 	switch v.Sort {
 	case DBInt:
 		return fmt.Sprintf("%d", v.Num)
-	case DBString:
+	case DBString, DBDate:
 		return v.Str
 	case DBBlob:
 		return base64.StdEncoding.EncodeToString([]byte(v.Str))
@@ -109,7 +114,7 @@ func (v *Value) Bytes() []byte {
 		bs := make([]byte, 8)
 		binary.LittleEndian.PutUint64(bs, uint64(v.Num))
 		return bs
-	case DBString:
+	case DBString, DBDate:
 		bs := []byte(v.Str)
 		return bs
 	case DBBlob:
@@ -118,6 +123,20 @@ func (v *Value) Bytes() []byte {
 	default:
 		panic(fmt.Sprintf("cannot convert %s value to bytes",
 			GetUserTypeString(v.Sort)))
+	}
+}
+
+// Datetime returns the time value and panics of no valid date is stored.
+func (v *Value) Datetime() time.Time {
+	switch v.Sort {
+	case DBString, DBBlob, DBDate:
+		t, err := parseTime(v.Str)
+		if err != nil {
+			panic(fmt.Sprintf("invalid datetime representation '%s'", v.Str))
+		}
+		return t
+	default:
+		panic(fmt.Sprintf("cannot convert %s value to date", GetUserTypeString(v.Sort)))
 	}
 }
 
@@ -136,6 +155,11 @@ func NewString(s string) Value {
 // byte slices may contain NULL characters and may be converted to and from Base64.
 func NewBytes(b []byte) Value {
 	return Value{Str: string(b), Sort: DBBlob}
+}
+
+// NewDate create a value that holds a datetime.
+func NewDate(t time.Time) Value {
+	return Value{Str: t.UTC().Format(time.RFC3339), Sort: DBDate}
 }
 
 var validTable *regexp.Regexp
@@ -167,6 +191,8 @@ func getTypeString(field FieldType) string {
 		return "TEXT"
 	case DBBlob, DBBlobList:
 		return "BLOB"
+	case DBDate, DBDateList:
+		return "DATE"
 	default:
 		return "INTEGER"
 	}
@@ -187,6 +213,10 @@ func GetUserTypeString(field FieldType) string {
 		return "blob"
 	case DBBlobList:
 		return "blob-list"
+	case DBDate:
+		return "date"
+	case DBDateList:
+		return "date-list"
 	default:
 		return "unknown"
 	}
@@ -201,12 +231,16 @@ func parseFieldType(ident string) (FieldType, error) {
 		return DBString, nil
 	case "blob":
 		return DBBlob, nil
+	case "date":
+		return DBDate, nil
 	case "string-list", "str-list", "text-list", "txt-list":
 		return DBStringList, nil
 	case "blob-list":
 		return DBBlobList, nil
 	case "int-list", "integer-list":
 		return DBIntList, nil
+	case "date-list":
+		return DBDateList, nil
 	}
 	return DBError,
 		Fail("Invalid field type '%s', should be one of int,string,blob,int-list,string-list,blob-list", ident)
@@ -403,11 +437,18 @@ func (db *MDB) ParseFieldValues(table string, field string, data []string) ([]Va
 		case DBBlob:
 			b, err := base64.StdEncoding.DecodeString(data[i])
 			if err != nil {
-				return nil, Fail("type error: expected binary data in Base64 format but the given data  seems invalid")
+				return nil, Fail("type error: expected binary data in Base64 format but the given data seems invalid")
 			}
 			result = append(result, NewBytes(b))
 		case DBString:
 			result = append(result, NewString(data[i]))
+		case DBDate:
+			var t time.Time
+			var err error
+			if t, err = parseTime(data[i]); err != nil {
+				return nil, Fail("type error: expected datetime in RFC3339 format - %s", err)
+			}
+			result = append(result, NewDate(t))
 		default:
 			return nil,
 				Fail("internal error: %s %s expects type %d, which is unknown to this version of minidb",
@@ -415,6 +456,14 @@ func (db *MDB) ParseFieldValues(table string, field string, data []string) ([]Va
 		}
 	}
 	return result, nil
+}
+
+func parseTime(s string) (time.Time, error) {
+	t, err := time.ParseInLocation(time.RFC3339, s, time.Now().Local().Location())
+	if err == nil {
+		return t, nil
+	}
+	return t, Fail("invalid date format '%s'", s)
 }
 
 // AddTable is used to create a new table. Table and field names are validated. They need to be alphanumeric
@@ -580,7 +629,7 @@ func (db *MDB) getSingleField(table string, item Item, field string) ([]Value, e
 	switch t {
 	case DBInt:
 		err = row.Scan(&intResult)
-	case DBString, DBBlob:
+	case DBString, DBBlob, DBDate:
 		err = row.Scan(&strResult)
 	default:
 		return nil,
@@ -602,12 +651,13 @@ func (db *MDB) getSingleField(table string, item Item, field string) ([]Value, e
 				Fail("no int value for %s %d %s", table, item, field)
 		}
 		vslice[0] = NewInt(intResult.Int64)
-	case DBString, DBBlob:
+	case DBString, DBBlob, DBDate:
 		if !strResult.Valid {
 			return nil,
-				Fail("no string or blob value for %s %d %s", table, item, field)
+				Fail("no string, blob, or date value for %s %d %s", table, item, field)
 		}
 		vslice[0] = NewString(strResult.String)
+		vslice[0].Sort = t
 	}
 	return vslice, nil
 }
@@ -628,6 +678,7 @@ func (db *MDB) getListField(table string, item Item, field string) ([]Value, err
 		return nil,
 			Fail("cannot find values for %s %d %s: %s", table, item, field, err)
 	}
+	defer rows.Close()
 	results := make([]Value, 0)
 	var intResult sql.NullInt64
 	var strResult sql.NullString
@@ -635,48 +686,53 @@ func (db *MDB) getListField(table string, item Item, field string) ([]Value, err
 		switch t {
 		case DBInt, DBIntList:
 			if err := rows.Scan(&intResult); err != nil {
-				rows.Close()
 				return nil,
 					Fail("cannot find int values for %s %d %s: %s", table, item, field, err)
 			}
 			if !intResult.Valid {
-				rows.Close()
 				return nil, Fail("no int value for %s %d %s", table, item, field)
 			}
 			results = append(results, NewInt(intResult.Int64))
 		case DBString, DBStringList:
 			if err := rows.Scan(&strResult); err != nil {
-				rows.Close()
 				return nil,
 					Fail("cannot find string values for %s %d %s: %s", table, item, field, err)
 			}
 			if !strResult.Valid {
-				rows.Close()
 				return nil,
 					Fail("no string value for %s %d %s", table, item, field)
 			}
 			results = append(results, NewString(strResult.String))
 		case DBBlob, DBBlobList:
 			if err := rows.Scan(&strResult); err != nil {
-				rows.Close()
 				return nil,
 					Fail("cannot find string values for %s %d %s: %s", table, item, field, err)
 			}
 			if !strResult.Valid {
-				rows.Close()
 				return nil,
 					Fail("no string value for %s %d %s", table, item, field)
 			}
 			b := []byte(strResult.String)
 			results = append(results, NewBytes(b))
+		case DBDate, DBDateList:
+			if err := rows.Scan(&strResult); err != nil {
+				return nil, Fail("cannot find date values for %s %d %s: %s", table, item, field, err)
+			}
+			if !strResult.Valid {
+				return nil,
+					Fail("no date value for %s %d %s", table, item, field)
+			}
+			t, err := parseTime(strResult.String)
+			if err != nil {
+				return nil, Fail("invalid date representation in %s %d %s", table, item, field)
+			}
+			results = append(results, NewDate(t))
 		default:
-			rows.Close()
 			return nil,
 				Fail("cannot find values for %s %d %s: unknown field type %d (version too low?)",
 					table, item, field, t)
 		}
 	}
-	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil,
 			Fail("cannot find values for %s %d %s: %s", table, item, field, err)

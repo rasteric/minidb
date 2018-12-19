@@ -104,6 +104,16 @@ func getDB(cmd *Command) (*MDB, *Result) {
 	return nil, &r
 }
 
+func CloseAllDBs() {
+	mutex.Lock()
+	defer mutex.Unlock()
+	for db, _ := range openDBs {
+		openDBs[db].Close()
+		connections[db] = 0
+		openDBs[db] = nil
+	}
+}
+
 // Exec takes a Command structure and executes it, returning a Result or an error.
 // This function is a large switch, as a wrapper around the more specific API functions.
 // It incurs a runtime penalty and should only used when needed (e.g. when commands
@@ -116,6 +126,9 @@ func Exec(cmd *Command) *Result {
 
 	if openDBs == nil {
 		openDBs = make(map[CommandDB]*MDB)
+	}
+	if connections == nil {
+		connections = make(map[CommandDB]int)
 	}
 
 	if cmd.ID == CmdOpen {

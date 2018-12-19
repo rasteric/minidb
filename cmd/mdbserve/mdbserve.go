@@ -3,11 +3,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	minidb "github.com/rasteric/minidb"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
@@ -23,36 +25,60 @@ const (
 	ErrNone int = iota + 1
 	ErrSyntaxError
 	ErrServerFail
+	ErrNoSocket
+	ErrListen
+	ErrRecv
+	ErrUnmarshal
+	ErrMarshal
+	ErrSendIO
 )
 
-func ServerLoop(timeout int, url string, forever bool) error {
+type errmsg struct {
+	number int
+	msg    string
+}
+
+func ServerLoop(url string, ctx context.Context, ch chan errmsg, timeout time.Duration) {
 	var sock mangos.Socket
 	var err error
 	var msg []byte
 	if sock, err = rep.NewSocket(); err != nil {
-		return minidb.Fail("can't get new socket, %s", err)
+		ch <- errmsg{ErrNoSocket, fmt.Sprintf("can't get new socket, %s", err)}
+		return
 	}
+	defer sock.Close()
 	if err = sock.Listen(url); err != nil {
-		return minidb.Fail("can't listen, %s", err.Error())
+		ch <- errmsg{ErrListen, fmt.Sprintf("can't listen, %s", err.Error())}
+		return
 	}
+	//	sock.SetOption(mangos.OptionRecvDeadline, timeout)
+	//	sock.SetOption(mangos.OptionSendDeadline, timeout)
+	// server loop
 	for {
 		msg, err = sock.Recv()
 		if err != nil {
-			return minidb.Fail("i/o error, %s", err.Error())
+			ch <- errmsg{ErrRecv, fmt.Sprintf("i/o error, %s", err.Error())}
 		}
 		cmd := minidb.Command{}
 		err := json.Unmarshal(msg, &cmd)
 		if err != nil {
-			return minidb.Fail("unmarshal command failed, %s", err.Error())
+			ch <- errmsg{ErrUnmarshal, fmt.Sprintf("unmarshal command failed, %s", err.Error())}
 		}
 		reply := minidb.Exec(&cmd)
 		msg, err = json.Marshal(reply)
 		if err != nil {
-			return minidb.Fail("marshal reply failed, %s", err.Error())
+			ch <- errmsg{ErrMarshal, fmt.Sprintf("marshal reply failed, %s", err.Error())}
 		}
 		err = sock.Send(msg)
 		if err != nil {
-			return minidb.Fail("can't send reply, %s", err.Error())
+			ch <- errmsg{ErrSendIO, fmt.Sprintf("can't send reply, %s", err.Error())}
+		}
+		select {
+		case <-ctx.Done():
+			sock.Close()
+			minidb.CloseAllDBs()
+		default:
+			// do nothing
 		}
 	}
 }
@@ -69,12 +95,11 @@ func main() {
 	command := kingpin.MustParse(app.Parse(os.Args[1:]))
 
 	var tmax int
-	var noTimeout bool
 	var err error
 	switch command {
 	case timeout.FullCommand():
 		if strings.ToLower(*timeoutValue) == "none" {
-			noTimeout = true
+			tmax = 0
 		} else {
 			tmax, err = strconv.Atoi(*timeoutValue)
 			if err != nil || tmax < 0 {
@@ -89,9 +114,29 @@ func main() {
 	} else {
 		theURL = *url
 	}
-	err = ServerLoop(tmax, theURL, noTimeout)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s\n", err.Error())
-		os.Exit(ErrServerFail)
+
+	// Start the server loop
+
+	// context for timeout handling of server loop in main and serverloop
+	var ctx, cancel = context.WithCancel(context.Background())
+	var ch = make(chan errmsg, 1)
+	var msg errmsg
+
+	go ServerLoop(theURL, ctx, ch, time.Duration(tmax)*time.Second)
+	defer cancel()
+
+	done := false
+	for done == false {
+		select {
+		case msg := <-ch:
+			fmt.Fprintf(os.Stderr, "%s", msg.msg)
+			done = true
+		case <-time.After(time.Duration(tmax) * time.Second):
+			if tmax > 0 {
+				done = true
+			}
+		}
 	}
+	cancel()
+	os.Exit(msg.number)
 }
