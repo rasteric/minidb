@@ -1082,7 +1082,7 @@ func (l *mdbListener) Push(query *Query) {
 }
 
 func (l *mdbListener) Pop() *Query {
-	if len(*l.stack) == 0 {
+	if l.stack == nil || len(*l.stack) == 0 {
 		l.parseFailed = true
 		return FailedQuery("stack underflow while parsing expression")
 	}
