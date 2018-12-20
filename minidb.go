@@ -130,7 +130,7 @@ func (v *Value) Bytes() []byte {
 func (v *Value) Datetime() time.Time {
 	switch v.Sort {
 	case DBString, DBBlob, DBDate:
-		t, err := parseTime(v.Str)
+		t, err := ParseTime(v.Str)
 		if err != nil {
 			panic(fmt.Sprintf("invalid datetime representation '%s'", v.Str))
 		}
@@ -160,6 +160,12 @@ func NewBytes(b []byte) Value {
 // NewDate create a value that holds a datetime.
 func NewDate(t time.Time) Value {
 	return Value{Str: t.UTC().Format(time.RFC3339), Sort: DBDate}
+}
+
+// NewDateStr creates a value that holds a datetime given by a RFC3339 representation.
+// The correctness of the date string is not validated, so use this function with care.
+func NewDateStr(d string) Value {
+	return Value{Str: d, Sort: DBDate}
 }
 
 var validTable *regexp.Regexp
@@ -292,6 +298,22 @@ Name TEXT NOT NULL)`)
 	 FieldType INTEGER NOT NULL,
 	Owner INTEGER NOT NULL,
 	FOREIGN KEY(Owner) REFERENCES _TABLES(Id))`)
+	if err != nil {
+		return err
+	}
+	_, err = db.base.Exec(`CREATE TABLE IF NOT EXISTS _KVINT (Id INTEGER PRIMARY KEY NOT NULL, Value INTEGER NOT NULL)`)
+	if err != nil {
+		return err
+	}
+	_, err = db.base.Exec(`CREATE TABLE IF NOT EXISTS _KVSTR (Id INTEGER PRIMARY KEY NOT NULL, Value TEXT NOT NULL)`)
+	if err != nil {
+		return err
+	}
+	_, err = db.base.Exec(`CREATE TABLE IF NOT EXISTS _KVBLOB (Id INTEGER PRIMARY KEY NOT NULL, Value BLOB NOT NULL)`)
+	if err != nil {
+		return err
+	}
+	_, err = db.base.Exec(`CREATE TABLE IF NOT EXISTS _KVDATE (Id INTEGER PRIMARY KEY NOT NULL, Value TEXT NOT NULL)`)
 	return err
 }
 
@@ -445,7 +467,7 @@ func (db *MDB) ParseFieldValues(table string, field string, data []string) ([]Va
 		case DBDate:
 			var t time.Time
 			var err error
-			if t, err = parseTime(data[i]); err != nil {
+			if t, err = ParseTime(data[i]); err != nil {
 				return nil, Fail("type error: expected datetime in RFC3339 format - %s", err)
 			}
 			result = append(result, NewDate(t))
@@ -458,7 +480,7 @@ func (db *MDB) ParseFieldValues(table string, field string, data []string) ([]Va
 	return result, nil
 }
 
-func parseTime(s string) (time.Time, error) {
+func ParseTime(s string) (time.Time, error) {
 	t, err := time.ParseInLocation(time.RFC3339, s, time.Now().Local().Location())
 	if err == nil {
 		return t, nil
@@ -722,7 +744,7 @@ func (db *MDB) getListField(table string, item Item, field string) ([]Value, err
 				return nil,
 					Fail("no date value for %s %d %s", table, item, field)
 			}
-			t, err := parseTime(strResult.String)
+			t, err := ParseTime(strResult.String)
 			if err != nil {
 				return nil, Fail("invalid date representation in %s %d %s", table, item, field)
 			}

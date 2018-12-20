@@ -1,6 +1,9 @@
 package minidb
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // Represents a command in Exec().
 type CommandID int
@@ -27,6 +30,27 @@ const (
 	CmdGetFields
 	CmdIsEmptyListField
 	CmdMustGetFieldType
+	CmdGetInt
+	CmdGetStr
+	CmdGetBlob
+	CmdGetDate
+	CmdSetInt
+	CmdSetStr
+	CmdSetBlob
+	CmdSetDate
+	CmdDeleteInt
+	CmdDeleteStr
+	CmdDeleteBlob
+	CmdDeleteDate
+	CmdHasInt
+	CmdHasStr
+	CmdHasBlob
+	CmdHasDate
+	CmdListInt
+	CmdListStr
+	CmdListBlob
+	CmdListDate
+	CmdSetDateStr
 )
 
 // A database that has been opened.
@@ -49,6 +73,7 @@ type Command struct {
 	ValueArgs []Value   `json:"values"`
 	QueryArg  Query     `json:"query"`
 	IntArg    int64     `json:"int"`
+	IntArg2   int64     `json:"int2"`
 }
 
 // Result is a structure representing the result of a command execution via Exec().
@@ -63,6 +88,8 @@ type Result struct {
 	Items    []Item   `json:"items"`
 	Values   []Value  `json:"values"`
 	Fields   []Field  `json:"fields"`
+	Bytes    []byte   `json:"binary"`
+	Ints     []int64  `json:"ints"`
 	HasError bool     `json:"iserror"`
 }
 
@@ -90,6 +117,7 @@ const (
 	ErrToSQLFailed
 	ErrFieldExistsFailed
 	ErrGetFieldsFailed
+	ErrInvalidDate
 )
 
 func getDB(cmd *Command) (*MDB, *Result) {
@@ -263,6 +291,55 @@ func Exec(cmd *Command) *Result {
 		r.Bool = theDB.IsEmptyListField(cmd.StrArgs[0], cmd.ItemArg, cmd.StrArgs[1])
 	case CmdMustGetFieldType:
 		r.Int = int64(theDB.MustGetFieldType(cmd.StrArgs[0], cmd.StrArgs[1]))
+	case CmdGetInt:
+		r.Int = theDB.GetInt(cmd.IntArg)
+	case CmdGetStr:
+		r.Str = theDB.GetStr(cmd.IntArg)
+	case CmdGetBlob:
+		r.Bytes = theDB.GetBlob(cmd.IntArg)
+	case CmdGetDate:
+		r.Str = theDB.GetDateStr(cmd.IntArg)
+	case CmdSetInt:
+		theDB.SetInt(cmd.IntArg, cmd.IntArg2)
+	case CmdSetStr:
+		theDB.SetStr(cmd.IntArg, cmd.StrArgs[0])
+	case CmdSetBlob:
+		theDB.SetBlob(cmd.IntArg, []byte(cmd.StrArgs[0]))
+	case CmdSetDate:
+		t, err := ParseTime(cmd.StrArgs[0])
+		if err != nil {
+			r.HasError = true
+			r.Int = ErrInvalidDate
+			r.Str = err.Error()
+		} else {
+			theDB.SetDate(cmd.IntArg, t)
+		}
+	case CmdSetDateStr:
+		theDB.SetDateStr(cmd.IntArg, cmd.StrArgs[0])
+	case CmdHasInt:
+		r.Bool = theDB.HasInt(cmd.IntArg)
+	case CmdHasStr:
+		r.Bool = theDB.HasStr(cmd.IntArg)
+	case CmdHasBlob:
+		r.Bool = theDB.HasBlob(cmd.IntArg)
+	case CmdHasDate:
+		r.Bool = theDB.HasDate(cmd.IntArg)
+	case CmdDeleteInt:
+		theDB.DeleteInt(cmd.IntArg)
+	case CmdDeleteStr:
+		theDB.DeleteStr(cmd.IntArg)
+	case CmdDeleteBlob:
+		theDB.DeleteBlob(cmd.IntArg)
+	case CmdDeleteDate:
+		theDB.DeleteDate(cmd.IntArg)
+	case CmdListInt:
+		r.Ints = theDB.ListInt()
+	case CmdListStr:
+		r.Ints = theDB.ListStr()
+	case CmdListBlob:
+		r.Ints = theDB.ListBlob()
+	case CmdListDate:
+		r.Ints = theDB.ListDate()
 	default:
 		r.HasError = true
 		r.Str = Fail("exec failed: unhandled command").Error()
@@ -439,5 +516,175 @@ func ToSqlCommand(db CommandDB, table string, query *Query, limit int64) *Comman
 		StrArgs:  []string{table},
 		QueryArg: *query,
 		IntArg:   limit,
+	}
+}
+
+func GetIntCommand(db CommandDB, key int64) *Command {
+	return &Command{
+		ID:     CmdGetInt,
+		DB:     db,
+		IntArg: key,
+	}
+}
+
+func GetStrCommand(db CommandDB, key int64) *Command {
+	return &Command{
+		ID:     CmdGetStr,
+		DB:     db,
+		IntArg: key,
+	}
+}
+
+func GetBlobCommand(db CommandDB, key int64) *Command {
+	return &Command{
+		ID:     CmdGetBlob,
+		DB:     db,
+		IntArg: key,
+	}
+}
+
+func GetDateCommand(db CommandDB, key int64) *Command {
+	return &Command{
+		ID:     CmdGetDate,
+		DB:     db,
+		IntArg: key,
+	}
+}
+
+func SetIntCommand(db CommandDB, key int64, value int64) *Command {
+	return &Command{
+		ID:      CmdSetInt,
+		DB:      db,
+		IntArg:  key,
+		IntArg2: value,
+	}
+}
+
+func SetStrCommand(db CommandDB, key int64, value string) *Command {
+	return &Command{
+		ID:      CmdSetStr,
+		DB:      db,
+		IntArg:  key,
+		StrArgs: []string{value},
+	}
+}
+
+func SetBlobCommand(db CommandDB, key int64, value []byte) *Command {
+	return &Command{
+		ID:      CmdSetBlob,
+		DB:      db,
+		IntArg:  key,
+		StrArgs: []string{string(value)},
+	}
+}
+
+func SetDateCommand(db CommandDB, key int64, value time.Time) *Command {
+	d := NewDate(value)
+	return &Command{
+		ID:      CmdSetDate,
+		DB:      db,
+		IntArg:  key,
+		StrArgs: []string{d.String()},
+	}
+}
+
+func SetDateStrCommand(db CommandDB, key int64, value string) *Command {
+	return &Command{
+		ID:      CmdSetDateStr,
+		DB:      db,
+		IntArg:  key,
+		StrArgs: []string{value},
+	}
+}
+
+func HasIntCommand(db CommandDB, key int64) *Command {
+	return &Command{
+		ID:     CmdHasInt,
+		DB:     db,
+		IntArg: key,
+	}
+}
+
+func HasStrCommand(db CommandDB, key int64) *Command {
+	return &Command{
+		ID:     CmdHasStr,
+		DB:     db,
+		IntArg: key,
+	}
+}
+
+func HasBlobCommand(db CommandDB, key int64) *Command {
+	return &Command{
+		ID:     CmdHasBlob,
+		DB:     db,
+		IntArg: key,
+	}
+}
+
+func HasDateCommand(db CommandDB, key int64) *Command {
+	return &Command{
+		ID:     CmdHasDate,
+		DB:     db,
+		IntArg: key,
+	}
+}
+
+func DeleteIntCommand(db CommandDB, key int64) *Command {
+	return &Command{
+		ID:     CmdDeleteInt,
+		DB:     db,
+		IntArg: key,
+	}
+}
+
+func DeleteStrCommand(db CommandDB, key int64) *Command {
+	return &Command{
+		ID:     CmdDeleteStr,
+		DB:     db,
+		IntArg: key,
+	}
+}
+
+func DeleteBlobCommand(db CommandDB, key int64) *Command {
+	return &Command{
+		ID:     CmdDeleteBlob,
+		DB:     db,
+		IntArg: key,
+	}
+}
+
+func DeleteDateCommand(db CommandDB, key int64) *Command {
+	return &Command{
+		ID:     CmdDeleteDate,
+		DB:     db,
+		IntArg: key,
+	}
+}
+
+func ListIntCommand(db CommandDB) *Command {
+	return &Command{
+		ID: CmdListInt,
+		DB: db,
+	}
+}
+
+func ListStrCommand(db CommandDB) *Command {
+	return &Command{
+		ID: CmdListStr,
+		DB: db,
+	}
+}
+
+func ListBlobCommand(db CommandDB) *Command {
+	return &Command{
+		ID: CmdListBlob,
+		DB: db,
+	}
+}
+
+func ListDateCommand(db CommandDB) *Command {
+	return &Command{
+		ID: CmdListDate,
+		DB: db,
 	}
 }
