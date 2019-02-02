@@ -51,6 +51,7 @@ const (
 	CmdListBlob
 	CmdListDate
 	CmdSetDateStr
+	CmdFieldIsEmpty
 )
 
 // A database that has been opened.
@@ -278,6 +279,8 @@ func Exec(cmd *Command) *Result {
 		r.Strings[0] = s
 	case CmdFieldIsNull:
 		r.Bool = theDB.FieldIsNull(cmd.StrArgs[0], cmd.ItemArg, cmd.StrArgs[1])
+	case CmdFieldIsEmpty:
+		r.Bool = theDB.FieldIsEmpty(cmd.StrArgs[0], cmd.ItemArg, cmd.StrArgs[1])
 	case CmdFieldExists:
 		r.Bool = theDB.FieldExists(cmd.StrArgs[0], cmd.StrArgs[1])
 	case CmdGetFields:
@@ -389,6 +392,15 @@ func FieldExistsCommand(db CommandDB, table string, field string) *Command {
 func FieldIsNullCommand(db CommandDB, item Item, field string) *Command {
 	return &Command{
 		ID:      CmdFieldIsNull,
+		DB:      db,
+		StrArgs: []string{field},
+		ItemArg: item,
+	}
+}
+
+func FieldIsEmptyCommand(db CommandDB, item Item, field string) *Command {
+	return &Command{
+		ID:      CmdFieldIsEmpty,
 		DB:      db,
 		StrArgs: []string{field},
 		ItemArg: item,

@@ -1,5 +1,5 @@
 grammar: 
-	java org.antlr.v4.Tool -Dlanguage=Go -o parser Mdb.g4
+	java org.antlr.v4.Tool -Dlanguage=Go -o parser MdbParser.g4
 
 compile:
 	go build -v && go test && go vet

@@ -562,13 +562,14 @@ func TestMDB(t *testing.T) {
 }
 
 func TestParseQuery(t *testing.T) {
-	queries := []string{`test Name=r% OR Name=John`,
-		"Person Name=Smith OR NOT Name=John",
-		"Person Age=47 AND Name=John%",
+	queries := []string{`test Name=r% or Name=John`,
+		"Person Name=Smith or not Name=John",
+		"Person Age=47 and Name=John%",
 		`Person Name="John"`,
-		`Person Email="john@smith.com" AND Name="%r%"`,
+		`Person Email="john@smith.com" and Name="%r%"`,
 		`Person every Name=%e%`,
 		`Person no Name=John`,
+		`Person not every Name=John`,
 	}
 	for _, query := range queries {
 		_, err := ParseQuery(query)
@@ -794,15 +795,15 @@ func TestFindTest(t *testing.T) {
 			}
 		}
 		// Data blob list field
-		for j := range v.Blobs {
-			query := `test Data="` + v.Blobs[j] + `"`
+		for j, _ := range v.Blobs {
+			query := fmt.Sprintf("test Data=%s", v.Blobs[j])
 			q, err := ParseQuery(query)
 			if err != nil {
 				t.Errorf(`ParseQuery("%s") failed: %s`, query, err)
 			}
 			results, err := db.Find(q, 200)
 			if err != nil {
-				t.Errorf(`MDB.Find() failed for query "%s", should have succeeded`, query)
+				t.Errorf(`MDB.Find() failed for query "%s", should have succeeded: %s`, query, err)
 			}
 			found := false
 			for k := range results {
@@ -831,7 +832,7 @@ func TestFindTest(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf(`MDB.Find() failed to find Blob for query "%s", should have succeeded`, query)
+			t.Errorf(`MDB.Find() failed to find single Blob for query "%s", should have succeeded`, query)
 		}
 	}
 
@@ -877,7 +878,7 @@ func teardown() {
 		db.Close()
 	}
 	if tmpfile != nil {
-		//		os.Remove(tmpfile.Name())
+		os.Remove(tmpfile.Name())
 	}
 }
 
