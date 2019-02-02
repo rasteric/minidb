@@ -19,7 +19,6 @@ import (
 
 	"github.com/rasteric/minidb/parser"
 
-	"github.com/antlr/antlr4/runtime/Go/antlr"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -180,7 +179,7 @@ func init() {
 
 func isListFieldType(field FieldType) bool {
 	switch field {
-	case DBStringList, DBIntList, DBBlobList:
+	case DBStringList, DBIntList, DBBlobList, DBDateList:
 		return true
 	default:
 		return false
@@ -358,14 +357,27 @@ func (db *MDB) TableExists(table string) bool {
 	}
 }
 
-// FieldIsNull returns true if the field is not null for the item in the table, false otherwise.
+// FieldIsNull returns true if the field is null for the item in the table, false otherwise.
 func (db *MDB) FieldIsNull(table string, item Item, field string) bool {
 	var result int
-	err := db.base.QueryRow(fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM "%s" WHERE ? IS NULL and Id=?)`, table), field, item).Scan(&result)
+	err := db.base.QueryRow(fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM "%s" WHERE ? IS NULL and Id=?);`, table), field, item).Scan(&result)
 	if err != nil {
 		return false
 	}
-	return result > 0
+	return result == 0
+}
+
+// FieldIsEmpty returns true if the field is null or empty, false otherwise.
+func (db *MDB) FieldIsEmpty(table string, item Item, field string) bool {
+	if db.FieldIsNull(table, item, field) {
+		return true
+	}
+	var result int
+	err := db.base.QueryRow(fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM "%s" WHERE ?='' and Id=?)`, table), field, item).Scan(&result)
+	if err != nil {
+		return false
+	}
+	return result == 0
 }
 
 // ItemExists returns true if the item exists in the table, false otherwise.
@@ -378,12 +390,22 @@ func (db *MDB) ItemExists(table string, item Item) bool {
 	return result > 0
 }
 
-// IsEmptyListField returns true if the field has at least one result matching item.
+// IsListField is true if the field in the table is a list, false otherwise.
+// List fields are internally stored as special tables.
+func (db *MDB) IsListField(table string, field string) bool {
+	return db.TableExists(listFieldToTableName(table, field))
+}
+
+// IsEmptyListField returns true if the field is a list field and has no element matching item.
+// If the item does not exist, the function returns true as well.
 func (db *MDB) IsEmptyListField(table string, item Item, field string) bool {
 	var result int
-	err := db.base.QueryRow(fmt.Sprintf(`SELECT COUNT (%s) FROM "%s" WHERE Owner=? AND %s IS NOT NULL LIMIT 1`, field, table, field), item).Scan(&result)
-	if err != nil {
+	if !db.IsListField(table, field) {
 		return false
+	}
+	err := db.base.QueryRow(fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM "%s" WHERE Owner=? AND %s IS NOT NULL LIMIT 1)`, table, field), item).Scan(&result)
+	if err != nil {
+		return true
 	}
 	return result == 0
 }
@@ -420,14 +442,8 @@ func (db *MDB) MustGetFieldType(table string, field string) FieldType {
 	return FieldType(result)
 }
 
-// IsListField is true if the field in the table is a list, false otherwise.
-// List fields are internally stored as special tables.
-func (db *MDB) IsListField(table string, field string) bool {
-	return db.TableExists(listFieldToTableName(table, field))
-}
-
 // ParseFieldValues parses potential value(s) for a field from strings, returns an error if their type is
-// incompatible with the field type or the table or field don't exist.
+// incompatible with the field type, the table or field don't exist, or if the input is empty.
 // Data for a Blob field must be Base64 encoded, data for an Integer field must be a valid
 // digit sequence for a 64 bit integer in base 10 format.
 func (db *MDB) ParseFieldValues(table string, field string, data []string) ([]Value, error) {
@@ -639,10 +655,6 @@ func (db *MDB) getSingleField(table string, item Item, field string) ([]Value, e
 		return nil,
 			Fail(`no field %s in table %s`, field, table)
 	}
-	if db.FieldIsNull(table, item, field) {
-		return nil,
-			Fail(`no value for %s %d %s`, table, item, field)
-	}
 	t := db.MustGetFieldType(table, field)
 	row := db.base.QueryRow(fmt.Sprintf(`SELECT "%s" FROM "%s" WHERE Id=?;`, field, table), item)
 	var intResult sql.NullInt64
@@ -695,7 +707,7 @@ func (db *MDB) getListField(table string, item Item, field string) ([]Value, err
 			Fail("no values for %s %d %s", table, item, field)
 	}
 	t := db.MustGetFieldType(table, field)
-	rows, err := db.base.Query(fmt.Sprintf(`SELECT %s FROM "%s" WHERE Owner=?`, field, tableName), item)
+	rows, err := db.base.Query(fmt.Sprintf(`SELECT "%s" FROM "%s" WHERE Owner=?`, field, tableName), item)
 	if err != nil {
 		return nil,
 			Fail("cannot find values for %s %d %s: %s", table, item, field, err)
@@ -780,8 +792,8 @@ func (db *MDB) Set(table string, item Item, field string, data []Value) error {
 	t := ToBaseType(db.MustGetFieldType(table, field))
 	for i, _ := range data {
 		if data[i].Sort != t {
-			return Fail("type error %s %d %s: expected %d, encountered %d",
-				table, item, field, t, data[i].Sort)
+			return Fail("type error %s %d %s: expected %s, encountered %s",
+				table, item, field, GetUserTypeString(t), GetUserTypeString(data[i].Sort))
 		}
 	}
 	if db.IsListField(table, field) {
@@ -795,14 +807,17 @@ func (db *MDB) Set(table string, item Item, field string, data []Value) error {
 }
 
 func (db *MDB) setSingleField(table string, item Item, field string, datum Value) error {
+	var err error
 	switch datum.Sort {
 	case DBInt:
-		_, err := db.base.Exec(fmt.Sprintf(`UPDATE %s SET %s = ? WHERE Id=?;`, table, field), datum.Int(), item)
-		return err
+		_, err = db.base.Exec(fmt.Sprintf(`UPDATE "%s" SET "%s" = ? WHERE Id=?;`, table, field), datum.Int(), item)
+	case DBBlob:
+		_, err = db.base.Exec(fmt.Sprintf(`UPDATE "%s" SET "%s" = ? WHERE Id=?`, table, field),
+			datum.Bytes(), item)
 	default:
-		_, err := db.base.Exec(fmt.Sprintf(`UPDATE %s SET %s = ? WHERE Id=?;`, table, field), datum.String(), item)
-		return err
+		_, err = db.base.Exec(fmt.Sprintf(`UPDATE "%s" SET "%s" = ? WHERE Id=?;`, table, field), datum.String(), item)
 	}
+	return err
 }
 
 func (db *MDB) setListFields(table string, item Item, field string, data []Value) error {
@@ -816,11 +831,15 @@ func (db *MDB) setListFields(table string, item Item, field string, data []Value
 	if err != nil {
 		return err
 	}
+
 	for i, _ := range data {
 		switch data[i].Sort {
 		case DBInt:
 			_, err = db.base.Exec(fmt.Sprintf(`INSERT INTO %s(%s,Owner) VALUES(?,?)`, tableName, field),
 				data[i].Int(), item)
+		case DBBlob:
+			_, err = db.base.Exec(fmt.Sprintf(`INSERT INTO %s(%s,Owner) VALUES(?,?)`, tableName, field),
+				data[i].Bytes(), item)
 		default:
 			_, err = db.base.Exec(fmt.Sprintf(`INSERT INTO %s(%s,Owner) VALUES(?,?)`, tableName, field),
 				data[i].String(), item)
@@ -887,22 +906,77 @@ type QuerySort int
 // The sorts of query entries.
 const (
 	ParseError QuerySort = iota + 1
-	Term
+	TableString
+	QueryString
 	LogicalAnd
 	LogicalOr
 	LogicalNot
-	Clause
-	FieldName
+	FieldString
 	SearchClause
 	NoTerm
 	EveryTerm
+	LeftParen
+	RightParen
+	InfixOP
 )
+
+// QuerySortToStr convert the sort of a query to a string. This is merely used for debugging and testing.
+func QuerySortToStr(s QuerySort) string {
+	switch s {
+	case ParseError:
+		return "<parse-error>"
+	case TableString:
+		return "TableString"
+	case QueryString:
+		return "QueryString"
+	case LogicalAnd:
+		return "LogicalAnd"
+	case LogicalOr:
+		return "LogicalOr"
+	case LogicalNot:
+		return "LogicalNot"
+	case FieldString:
+		return "FieldString"
+	case SearchClause:
+		return "SearchClause"
+	case NoTerm:
+		return "NoTerm"
+	case EveryTerm:
+		return "EveryTerm"
+	case LeftParen:
+		return "LeftParen"
+	case RightParen:
+		return "RightParen"
+	case InfixOP:
+		return "InfixOP"
+	default:
+		return "<unknown>"
+	}
+}
 
 // Query represents a simple or complex database query.
 type Query struct {
 	Sort     QuerySort `json:"sort"`
 	Children []Query   `json:"children"`
 	Data     string    `json:"data"`
+}
+
+// DebugDump returns a string representation of a query. This is used for debugging and testing, the result
+// is neither pretty-printed nor intended for human consumption.
+func (q *Query) DebugDump() string {
+	if q == nil {
+		return "<nil>"
+	}
+	s := ""
+	if q.Children != nil {
+		for i, c := range q.Children {
+			if i > 0 {
+				s = s + ","
+			}
+			s = s + c.DebugDump()
+		}
+	}
+	return fmt.Sprintf(`%s("%s",[%s])`, QuerySortToStr(q.Sort), q.Data, s)
 }
 
 // FailedQuery returns a failed Query pointer with the given message as explanation
@@ -913,6 +987,11 @@ func FailedQuery(msg string) *Query {
 
 func fPrintEscape(s string) string {
 	return strings.Replace(s, "%", "%%", -1)
+}
+
+func blobQueryEscape(s string) string {
+	return strings.Replace(strings.Replace(s, `\`, `\\`, -1),
+		`%%`, `\%%`, -1)
 }
 
 type fieldDesc struct {
@@ -935,7 +1014,8 @@ type fieldDesc struct {
 func (db *MDB) toSqlSearchTerm(q *Query, table string,
 	fieldDescs *[]fieldDesc, paramStartIdx *int) (string, error) {
 	switch (*q).Sort {
-	case Clause:
+
+	case InfixOP:
 		if (*q).Children == nil {
 			return "", Fail("empty clause")
 		}
@@ -945,10 +1025,10 @@ func (db *MDB) toSqlSearchTerm(q *Query, table string,
 		if len((*q).Children) > 2 {
 			return "", Fail("too many arguments in clause")
 		}
-		if (*q).Children[0].Sort != FieldName {
+		if (*q).Children[0].Sort != FieldString {
 			return "", Fail("first part of a clause must be the field")
 		}
-		if (*q).Children[1].Sort != Term {
+		if (*q).Children[1].Sort != QueryString {
 			return "", Fail("second part of a clause must be the search term")
 		}
 		fieldName, err := db.toSqlSearchTerm(&(*q).Children[0], table, fieldDescs, paramStartIdx)
@@ -965,9 +1045,13 @@ func (db *MDB) toSqlSearchTerm(q *Query, table string,
 		switch sort {
 		case DBInt, DBIntList:
 			return `CAST(<P` + strconv.Itoa(*paramStartIdx) + `>.` + fmt.Sprintf(`%s AS TEXT) LIKE '%s'`, fieldName, searchTerm), nil
+		case DBBlob, DBBlobList:
+			return `<P` + strconv.Itoa(*paramStartIdx) + `>.` + fmt.Sprintf(`%s LIKE '%s' ESCAPE '\'`, fieldName,
+				blobQueryEscape(searchTerm)), nil
 		default:
 			return `<P` + strconv.Itoa(*paramStartIdx) + `>.` + fmt.Sprintf(`%s LIKE '%s'`, fieldName, searchTerm), nil
 		}
+
 	case LogicalAnd, LogicalOr:
 		var connective string
 		if (*q).Sort == LogicalAnd {
@@ -999,6 +1083,7 @@ func (db *MDB) toSqlSearchTerm(q *Query, table string,
 			return "", err
 		}
 		return fmt.Sprintf(`NOT (%s)`, clause), nil
+
 	case NoTerm, EveryTerm:
 		if len((*q).Children) == 0 {
 			return "", Fail("missing argument")
@@ -1028,12 +1113,14 @@ func (db *MDB) toSqlSearchTerm(q *Query, table string,
 		default:
 			return "", Fail("unsupported search modifier %d (version too low?)", int((*q).Sort))
 		}
-	case FieldName:
+
+	case FieldString:
 		if !validFieldName.MatchString((*q).Data) {
 			return "", Fail("invalid field name '%s'", (*q).Data)
 		}
 		return (*q).Data, nil
-	case Term:
+
+	case QueryString:
 		return fPrintEscape((*q).Data), nil
 	default:
 		return "", Fail("unsupported query element %d (version too low?)", int((*q).Sort))
@@ -1042,9 +1129,25 @@ func (db *MDB) toSqlSearchTerm(q *Query, table string,
 
 // ToSql returns the sql query for the table, taking into account list fields,
 // or returns an error if the query structure is ill-formed.
-func (db *MDB) ToSql(table string, query *Query, limit int64) (string, error) {
+func (db *MDB) ToSql(table string, inquery *Query, limit int64) (string, error) {
 	if !db.TableExists(table) {
 		return "", Fail("table '%s' does not exist", table)
+	}
+	// check if the query is embedded into a search clause
+	// if so, we check against the table name and remove the outer layer
+	// since toSqlSearchTerm works on the basis of a known and validated table
+	var query *Query
+	if inquery.Sort == SearchClause {
+		if inquery.Data != table {
+			return "", Fail("query with SearchClause for table '%s' requested for table '%s'", inquery.Data, table)
+		}
+		if len(inquery.Children) != 1 {
+			return "", Fail("query with malformed SearchClause, it should have one child node but contains %d",
+				len(inquery.Children))
+		}
+		query = &inquery.Children[0]
+	} else {
+		query = inquery
 	}
 	fieldDescs := make([]fieldDesc, 0)
 	c := 0
@@ -1074,11 +1177,15 @@ func (db *MDB) ToSql(table string, query *Query, limit int64) (string, error) {
 			j++
 		}
 	}
+	var result string
 	if limit > 0 {
-		return fmt.Sprintf("SELECT DISTINCT %s.Id FROM %s%s WHERE %s LIMIT %d;", table, table, joins, condition, limit), nil
+		result = fmt.Sprintf("SELECT DISTINCT %s.Id FROM %s%s WHERE %s LIMIT %d;",
+			table, table, joins, condition, limit)
 	} else {
-		return fmt.Sprintf("SELECT DISTINCT %s.Id FROM %s%s WHERE %s;", table, table, joins, condition), nil
+		result = fmt.Sprintf("SELECT DISTINCT %s.Id FROM %s%s WHERE %s;",
+			table, table, joins, condition)
 	}
+	return result, nil
 }
 
 // ------------------------------------
@@ -1121,7 +1228,7 @@ func (l *mdbListener) ExitSearchclause(c *parser.SearchclauseContext) {
 }
 
 func (l *mdbListener) ExitField(c *parser.FieldContext) {
-	l.Push(&Query{FieldName, nil, c.GetText()})
+	l.Push(&Query{FieldString, nil, c.GetText()})
 }
 
 func (l *mdbListener) ExitSearchterm(c *parser.SearchtermContext) {
@@ -1131,14 +1238,14 @@ func (l *mdbListener) ExitSearchterm(c *parser.SearchtermContext) {
 	} else {
 		s = c.GetText()
 	}
-	l.Push(&Query{Term, nil, s})
+	l.Push(&Query{QueryString, nil, s})
 }
 
 func (l *mdbListener) ExitFieldsearch(c *parser.FieldsearchContext) {
 	rhs := l.Pop()
 	lhs := l.Pop()
 	if lhs != nil && rhs != nil {
-		l.Push(&Query{Clause, []Query{*lhs, *rhs}, ""})
+		l.Push(&Query{InfixOP, []Query{*lhs, *rhs}, "="})
 	}
 }
 
@@ -1203,41 +1310,41 @@ func NewMdbListener() *mdbListener {
 
 //  ParseQuery parses a string consisting of table name+query clauses into a Query
 // structure for processing by ToSql.
-func ParseQuery(s string) (*Query, error) {
-	// Setup the input
-	is := antlr.NewInputStream(s)
+// func ParseQuery(s string) (*Query, error) {
+// 	// Setup the input
+// 	is := antlr.NewInputStream(s)
 
-	// Create the Lexer
-	lexer := parser.NewMdbLexer(is)
+// 	// Create the Lexer
+// 	lexer := parser.NewMdbLexer(is)
 
-	stream := antlr.NewCommonTokenStream(lexer, antlr.TokenDefaultChannel)
+// 	stream := antlr.NewCommonTokenStream(lexer, antlr.TokenDefaultChannel)
 
-	// // Print the lexer tokens:
-	// for {
-	// 	t := lexer.NextToken()
-	// 	if t.GetTokenType() == antlr.TokenEOF {
-	// 		break
-	// 	}
-	// 	fmt.Printf("%s (%q)\n",
-	// 		lexer.SymbolicNames[t.GetTokenType()], t.GetText())
-	// }
+// 	// // Print the lexer tokens:
+// 	// for {
+// 	// 	t := lexer.NextToken()
+// 	// 	if t.GetTokenType() == antlr.TokenEOF {
+// 	// 		break
+// 	// 	}
+// 	// 	fmt.Printf("%s (%q)\n",
+// 	// 		lexer.SymbolicNames[t.GetTokenType()], t.GetText())
+// 	// }
 
-	// Create the Parser
-	p := parser.NewMdbParser(stream)
-	p.BuildParseTrees = true
-	// Finally parse the expression
-	tree := p.Start()
-	listener := NewMdbListener()
-	antlr.ParseTreeWalkerDefault.Walk(listener, tree)
-	if listener.parseFailed == true {
-		return nil, Fail("failed to parse query '%s'", s)
-	}
-	if len(*listener.stack) == 0 {
-		return nil, Fail("incomplete query '%s'", s)
-	}
-	result := listener.Pop()
-	return result, nil
-}
+// 	// Create the Parser
+// 	p := parser.NewMdbParser(stream)
+// 	p.BuildParseTrees = true
+// 	// Finally parse the expression
+// 	tree := p.Start()
+// 	listener := NewMdbListener()
+// 	antlr.ParseTreeWalkerDefault.Walk(listener, tree)
+// 	if listener.parseFailed == true {
+// 		return nil, Fail("failed to parse query '%s'", s)
+// 	}
+// 	if len(*listener.stack) == 0 {
+// 		return nil, Fail("incomplete query '%s'", s)
+// 	}
+// 	result := listener.Pop()
+// 	return result, nil
+// }
 
 // Find items matching the query, return error if the query is ill-formed
 // and the items otherwise.
@@ -1249,7 +1356,7 @@ func (db *MDB) Find(query *Query, limit int64) ([]Item, error) {
 	}
 	query = &query.Children[0]
 	toExec, err := db.ToSql(table, query, limit)
-	// fmt.Println(toExec) // the final query, for debugging
+	//fmt.Println(toExec) // the final query, for debugging
 	if err != nil {
 		return result, Fail("invalid query - %s", err)
 	}
