@@ -11,6 +11,10 @@ import (
 	"time"
 )
 
+var db *MDB
+var tmpfile *os.File
+var tmpfile2 *os.File
+
 func TestToBaseType(t *testing.T) {
 	tables := []struct {
 		in  FieldType
@@ -179,9 +183,6 @@ func TestParseFieldDesc(t *testing.T) {
 		}
 	}
 }
-
-var db *MDB
-var tmpfile *os.File
 
 func TestMDB(t *testing.T) {
 	db, err := Open("sqlite3", tmpfile.Name())
@@ -554,6 +555,18 @@ func TestMDB(t *testing.T) {
 		t.Errorf("MDB.GetTables() returned garbage")
 	}
 
+	// RemoveItem
+	if !db.ItemExists("test", item) {
+		t.Errorf("MDB.ItemExists() returned false for existing item")
+	}
+	err = db.RemoveItem("test", item)
+	if err != nil {
+		t.Errorf("MDB.RemoveItem() failed: %s", err)
+	}
+	if db.ItemExists("test", item) {
+		t.Errorf("MDB.ItemExists() returned true for nonexistent item, should have returned false")
+	}
+
 	// close it
 	err = db.Close()
 	if err != nil {
@@ -659,7 +672,7 @@ func NewRandomTestin(n Item) testin {
 	return ti
 }
 
-func TestFindTest(t *testing.T) {
+func TestFind(t *testing.T) {
 	db, err := Open("sqlite3", tmpfile.Name())
 	if err != nil {
 		t.Errorf("Open() failed: %s", err)
@@ -835,41 +848,24 @@ func TestFindTest(t *testing.T) {
 			t.Errorf(`MDB.Find() failed to find single Blob for query "%s", should have succeeded`, query)
 		}
 	}
-
-	// // now some custom queries
-	// queries := []struct {
-	// 	in  string
-	// 	out []int
-	// }{
-	// 	{`test Name=John`, []int{1}},
-	// }
-	// for _, query := range queries {
-	// 	q, err := ParseQuery(query.in)
-	// 	if err != nil {
-	// 		t.Errorf(`ParseQuery("%s") should work but returns error: %s`, query.in, err)
-	// 	}
-	// 	results, err := db.Find(q, 20000)
-	// 	for i, _ := range queries {
-	// 		found := false
-	// 		for j, _ := range results {
-	// 			for _, it := range queries[i].out {
-	// 				if Item(it) == results[j] {
-	// 					found = true
-	// 				}
-	// 			}
-	// 		}
-	// 		if !found {
-	// 			t.Errorf(`MDB.FindTest("%s") expected to find item %d but failed`, (queries[i]).in, queries[i].out)
-	// 		}
-	// 	}
-	// }
-
 	db.Close()
+}
+
+func TestBackup(t *testing.T) {
+	db, err := Open("sqlite3", tmpfile.Name())
+	if err != nil {
+		t.Errorf("Open() failed: %s", err)
+	}
+	defer db.Close()
+	if err := db.Backup(tmpfile2.Name()); err != nil {
+		t.Errorf(`MDB.Backup() failed: %s`, err)
+	}
 }
 
 func setup() {
 	var err error
 	tmpfile, err = ioutil.TempFile("", "minidb-testing-*")
+	tmpfile2, err = ioutil.TempFile("", "minidb-testing-*")
 	_ = err
 }
 
@@ -878,6 +874,9 @@ func teardown() {
 		db.Close()
 	}
 	if tmpfile != nil {
+		os.Remove(tmpfile.Name())
+	}
+	if tmpfile2 != nil {
 		os.Remove(tmpfile.Name())
 	}
 }

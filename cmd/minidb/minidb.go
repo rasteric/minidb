@@ -43,6 +43,7 @@ const (
 	ErrNoSocket
 	ErrNoConnection
 	ErrIO
+	ErrRemoveFailed
 )
 
 func sendCommand(sock mangos.Socket, cmd *minidb.Command) (*minidb.Result, error) {
@@ -120,6 +121,10 @@ func main() {
 	setItem := set.Arg("item", "The item whose field to set.").Required().Int64()
 	setField := set.Arg("field", "The field whose value to set.").Required().String()
 	setValues := set.Arg("values", "The value to set (values in case of a list field).").Required().Strings()
+
+	remove := app.Command("remove", "Remove an item.")
+	removeTable := remove.Arg("table", "The table to which the item belongs.").Required().String()
+	removeItem := remove.Arg("item", "The item to remove.").Required().Int64()
 
 	count := app.Command("count", "Count the number of items in a table.")
 	countTable := count.Arg("table", "The table whose items are to be counted.").Required().String()
@@ -330,6 +335,11 @@ func main() {
 			minidb.SetCommand(theDB, *setTable, minidb.Item(*setItem), *setField, result.Values))
 		if err != nil {
 			die(ErrSetFailed, "set failed - %s\n", err)
+		}
+	case remove.FullCommand():
+		_, err := sendCommand(sock, minidb.RemoveItemCommand(theDB, *removeTable, minidb.Item(*removeItem)))
+		if err != nil {
+			die(ErrRemoveFailed, "remove failed - %s\n", err)
 		}
 	case count.FullCommand():
 		result, err := sendCommand(sock, minidb.CountCommand(theDB, *countTable))

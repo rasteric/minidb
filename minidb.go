@@ -12,6 +12,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -22,10 +24,12 @@ import (
 
 // The main database object.
 type MDB struct {
-	base *sql.DB
+	base     *sql.DB
+	driver   string
+	location string
 }
 
-// A database item. Fields and tables are identified by strings.
+// database item. Fields and tables are identified by strings.
 type Item int64
 
 // FieldType is a field in the database, which might be a list type or a base type.
@@ -325,10 +329,57 @@ func Open(driver string, file string) (*MDB, error) {
 		return nil, errNilDB
 	}
 	db.base = base
+	db.driver = driver
+	db.location = file
 	if err := db.init(); err != nil {
 		return nil, Fail("cannot initialize database: %s", err)
 	}
 	return db, nil
+}
+
+// Backup a database and return the original opened, not the backed up database.
+// The new MDB pointer needs to be used after this method unless an error
+// has occurred since the old one might have become invalid.
+// This function may result in a corrupt copy if the database is open by another
+// process, so you need to make sure that it isn't.
+func (db *MDB) Backup(destination string) error {
+	if db.base == nil {
+		return Fail("the database must be open to back it up, this one is closed")
+	}
+	// use manual copy for now (should use sqlite3 backup API for sqlite3)
+	src := db.location
+	driver := db.driver
+	db.Close()
+	sourceFileStat, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+
+	if !sourceFileStat.Mode().IsRegular() {
+		return fmt.Errorf("backup: %s is not a regular file", src)
+	}
+
+	source, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+
+	dest, err := os.Create(destination)
+	if err != nil {
+		return err
+	}
+	defer dest.Close()
+	_, err = io.Copy(dest, source)
+	if err != nil {
+		return err
+	}
+	newdb, err := Open(driver, src)
+	if err != nil {
+		return err
+	}
+	db = newdb
+	return err
 }
 
 func (db *MDB) Close() error {
@@ -337,6 +388,8 @@ func (db *MDB) Close() error {
 		if err != nil {
 			return Fail("ERROR Failed to close database - %s.\n", err)
 		}
+		db.driver = ""
+		db.location = ""
 	}
 	return nil
 }
@@ -585,6 +638,23 @@ func (db *MDB) NewItem(table string) (Item, error) {
 	return Item(id), nil
 }
 
+// RemoveItem remove an item from the table.
+func (db *MDB) RemoveItem(table string, item Item) error {
+	if !validTable.MatchString(table) {
+		return Fail(`invalid table name "%s"`, table)
+	}
+	if !db.TableExists(table) {
+		return Fail("table '%s' does not exist", table)
+	}
+	if db.ItemExists(table, item) {
+		_, err := db.base.Exec(fmt.Sprintf(`DELETE FROM %s WHERE Id=?;`, table), item)
+		if err != nil {
+			return Fail(`error while deleting %s %d`, table, item)
+		}
+	}
+	return nil
+}
+
 // Count returns the number of items in the table.
 func (db *MDB) Count(table string) (int64, error) {
 	if !validTable.MatchString(table) {
@@ -820,33 +890,40 @@ func (db *MDB) setSingleField(table string, item Item, field string, datum Value
 
 func (db *MDB) setListFields(table string, item Item, field string, data []Value) error {
 	var err error
+	tx, err := db.base.Begin()
+	if err != nil {
+		return err
+	}
 	tableName := listFieldToTableName(table, field)
 	if !db.TableExists(tableName) {
+		tx.Rollback()
 		return Fail("internal error, table %s does not exist (database has been tampered)",
 			tableName)
 	}
-	_, err = db.base.Exec(fmt.Sprintf(`DELETE FROM %s WHERE Owner=?`, tableName), item)
+	_, err = tx.Exec(fmt.Sprintf(`DELETE FROM %s WHERE Owner=?`, tableName), item)
 	if err != nil {
+		tx.Rollback()
 		return err
 	}
 
 	for i, _ := range data {
 		switch data[i].Sort {
 		case DBInt:
-			_, err = db.base.Exec(fmt.Sprintf(`INSERT INTO %s(%s,Owner) VALUES(?,?)`, tableName, field),
+			_, err = tx.Exec(fmt.Sprintf(`INSERT INTO %s(%s,Owner) VALUES(?,?)`, tableName, field),
 				data[i].Int(), item)
 		case DBBlob:
-			_, err = db.base.Exec(fmt.Sprintf(`INSERT INTO %s(%s,Owner) VALUES(?,?)`, tableName, field),
+			_, err = tx.Exec(fmt.Sprintf(`INSERT INTO %s(%s,Owner) VALUES(?,?)`, tableName, field),
 				data[i].Bytes(), item)
 		default:
-			_, err = db.base.Exec(fmt.Sprintf(`INSERT INTO %s(%s,Owner) VALUES(?,?)`, tableName, field),
+			_, err = tx.Exec(fmt.Sprintf(`INSERT INTO %s(%s,Owner) VALUES(?,?)`, tableName, field),
 				data[i].String(), item)
 		}
 		if err != nil {
+			tx.Rollback()
 			return err
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 // GetFields returns the fields that belong to a table, including list fields.
