@@ -10,49 +10,93 @@ type CommandID int
 
 // The actual Exec() CommandID values. Names mirror the respective functions.
 const (
+	// CmdOpen is the type of an Open command struct.
 	CmdOpen CommandID = iota + 1
+	// CmdAddTable is the type of an AddTable command struct.
 	CmdAddTable
+	// CmdClose is the type of a Close command struct.
 	CmdClose
+	// CmdCount is the type of a Count command struct.
 	CmdCount
+	// CmdFind is the type of a Find command struct.
 	CmdFind
+	// CmdGet is the type of a Get command struct.
 	CmdGet
+	// CmdGetTables is the type of a GetTables command struct.
 	CmdGetTables
+	// CmdIsListField is the type of an IsListField command struct.
 	CmdIsListField
+	// CmdItemExists is the type of an ItemExists command struct.
 	CmdItemExists
+	// CmdListItems is the type of a ListItems command struct.
 	CmdListItems
+	// CmdNewItem is the type of a NewItem command struct.
 	CmdNewItem
+	// CmdParseFieldValues is the type of a ParseFieldValues command struct.
 	CmdParseFieldValues
+	// CmdSet is the type of a Set command struct.
 	CmdSet
+	// CmdTableExists is the type of a TableExists command struct.
 	CmdTableExists
+	// CmdToSQL is the type of a ToSQL command struct.
 	CmdToSQL
+	// CmdFieldIsNull is the type of a FieldIsNull command struct.
 	CmdFieldIsNull
+	// CmdFieldExists is the type of a FieldExists command struct.
 	CmdFieldExists
+	// CmdGetFields is the type of a GetFields command struct.
 	CmdGetFields
+	// CmdIsEmptyListField is the type of an IsEmptyListField command struct.
 	CmdIsEmptyListField
+	// CmdMustGetFieldType is the type of a MustGetFieldType command struct.
 	CmdMustGetFieldType
+	// CmdGetInt is the type of a GetInt command struct.
 	CmdGetInt
+	// CmdGetStr is the type of a GetStr command struct.
 	CmdGetStr
+	// CmdGetBlob is the type of a GetBlob command struct.
 	CmdGetBlob
+	// CmdGetDate is the type of a GetDate command struct.
 	CmdGetDate
+	// CmdSetInt is the type of a SetInt command struct.
 	CmdSetInt
+	// CmdSetStr is the type of a SetStr commmand struct.
 	CmdSetStr
+	// CmdSetBlob is the type of a SetBlob commmand struct.
 	CmdSetBlob
+	// CmdSetDate is the type of a SetDate command struct.
 	CmdSetDate
+	// CmdDeleteInt is the type of a DeleteInt command struct.
 	CmdDeleteInt
+	// CmdDeleteStr is the type of a DeleteStr command struct.
 	CmdDeleteStr
+	// CmdDeleteBlob is the type of a DeleteBlob command struct.
 	CmdDeleteBlob
+	// CmdDeleteDate is the type of a DeleteDate command struct.
 	CmdDeleteDate
+	// CmdHadInt is the type of a HasInt command struct.
 	CmdHasInt
+	// CmdHasStr is the type of a HasStr command struct.
 	CmdHasStr
+	// CmdHasBlob is the type of a HasBlob command struct.
 	CmdHasBlob
+	// CmdHasDate is the type of a HasDate command struct.
 	CmdHasDate
+	// CmdListInt is the type of a ListInt commmand struct.
 	CmdListInt
+	// CmdListStr is the type of a ListStr command struct.
 	CmdListStr
+	// CmdListBlob is the type of a ListBlob command struct.
 	CmdListBlob
+	// CmdListDate is the type of a ListDate command struct.
 	CmdListDate
+	// CmdSetDateStr is the type of a SetDateStr command struct.
 	CmdSetDateStr
+	// CmdFieldIsEmpty is the type of a FieldIsEmpty commmand struct.
 	CmdFieldIsEmpty
+	// CmdBackup is the type of a Backup commmand struct.
 	CmdBackup
+	// CmdRemoveItem is the type of a RemoveItem commmand struct.
 	CmdRemoveItem
 )
 
@@ -141,7 +185,7 @@ func getDB(cmd *Command) (*MDB, *Result) {
 func CloseAllDBs() {
 	mutex.Lock()
 	defer mutex.Unlock()
-	for db, _ := range openDBs {
+	for db := range openDBs {
 		openDBs[db].Close()
 		connections[db] = 0
 		openDBs[db] = nil
@@ -669,7 +713,7 @@ func HasIntCommand(db CommandDB, key int64) *Command {
 	}
 }
 
-// HasStr returns a pointer to a command structure for mdb.HasStr().
+// HasStrCommand returns a pointer to a command structure for mdb.HasStr().
 func HasStrCommand(db CommandDB, key int64) *Command {
 	return &Command{
 		ID:     CmdHasStr,

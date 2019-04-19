@@ -22,6 +22,7 @@ import (
 	_ "nanomsg.org/go/mangos/v2/transport/all"
 )
 
+// Constants that represent numeric error codes.
 const (
 	ErrNone = iota
 	ErrFalse
@@ -253,7 +254,7 @@ func main() {
 		*serverURL = "tcp://localhost:7873"
 	}
 	// we try dialing several times before giving up
-	var c int32 = 0
+	var c int32
 	success := false
 	for c < connectTrials {
 		sock.SetOption(mangos.OptionReconnectTime, 10)
@@ -300,13 +301,13 @@ func main() {
 			}
 			fields := result.Fields
 			fieldNames := make([]string, 0)
-			for i, _ := range fields {
+			for i := range fields {
 				fieldNames = append(fieldNames, (fields)[i].Name)
 			}
 			getFields = &fieldNames
 		}
 		errCount := 0
-		for i, _ := range *getFields {
+		for i := range *getFields {
 			result, err := sendCommand(sock, minidb.GetCommand(theDB, *getTable, minidb.Item(*getItem), (*getFields)[i]))
 			if err != nil {
 				if *dbview == "titled" {
@@ -318,7 +319,7 @@ func main() {
 				if *dbview == "titled" {
 					fmt.Printf("%s %d %s: %d\n", *getTable, *getItem, (*getFields)[i], len(result.Values))
 				}
-				for j, _ := range result.Values {
+				for j := range result.Values {
 					fmt.Printf("%s\n", result.Values[j].String())
 				}
 			}
@@ -358,7 +359,7 @@ func main() {
 		if err != nil {
 			die(ErrFailedListFields, "cannot list fields for '%s' - %s.\n", *listFieldsTable, err)
 		}
-		for i, _ := range result.Fields {
+		for i := range result.Fields {
 			fmt.Printf("%s %s\n", minidb.GetUserTypeString(result.Fields[i].Sort), result.Fields[i].Name)
 		}
 	case listTables.FullCommand():
@@ -366,7 +367,7 @@ func main() {
 			die(ErrIO, "transport failed: %s\n", err)
 		}
 		tables := result.Strings
-		for i, _ := range tables {
+		for i := range tables {
 			if i > 0 {
 				fmt.Print(" ")
 			}

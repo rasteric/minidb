@@ -21,6 +21,7 @@ import (
 	_ "nanomsg.org/go/mangos/v2/transport/all"
 )
 
+// Constants used for indicating different types of network or I/O errors.
 const (
 	ErrNone int = iota + 1
 	ErrSyntaxError
@@ -38,7 +39,8 @@ type errmsg struct {
 	msg    string
 }
 
-func ServerLoop(url string, ctx context.Context, ch chan errmsg, timeout time.Duration) {
+// ServerLoop starts the main server loop, listening for incoming client connections.
+func serverLoop(url string, ctx context.Context, ch chan errmsg, timeout time.Duration) {
 	var sock mangos.Socket
 	var err error
 	var msg []byte
@@ -122,7 +124,7 @@ func main() {
 	var ch = make(chan errmsg, 1)
 	var msg errmsg
 
-	go ServerLoop(theURL, ctx, ch, time.Duration(tmax)*time.Second)
+	go serverLoop(theURL, ctx, ch, time.Duration(tmax)*time.Second)
 	defer cancel()
 
 	done := false

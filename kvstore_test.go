@@ -12,7 +12,7 @@ const MAXTEST = 100
 
 func TestKVStore(t *testing.T) {
 	var tmp *os.File
-	tmp, err := ioutil.TempFile("", "minidb-kvstore-testing-*")
+	tmp, _ = ioutil.TempFile("", "minidb-kvstore-testing-*")
 	db, err := Open("sqlite3", tmp.Name())
 	if err != nil {
 		t.Errorf("Open() failed: %s", err)

@@ -10,7 +10,6 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -36,14 +35,23 @@ type Item int64
 type FieldType int
 
 const (
+	// DBError represents an error in a field definition.
 	DBError FieldType = iota + 1
+	// DBInt is the type of an int64 field.
 	DBInt
+	// DBString is the type of a string field.
 	DBString
+	// DBBlob is the type of a []byte field.
 	DBBlob
+	// DBIntList is the type of a list of int64 field.
 	DBIntList
+	// DBStringList is the type of a list of strings field.
 	DBStringList
+	// DBBlobList is the type of a list of []byte field, i.e., corresponding to [][]byte.
 	DBBlobList
+	// DBDate is the type of an RFC 3339 date field.
 	DBDate
+	// DBDateList is the type of a list of RFC 3339 dates field.
 	DBDateList
 )
 
@@ -71,7 +79,7 @@ type Field struct {
 
 // Fail returns a new error message formatted with fmt.Sprintf.
 func Fail(msg string, args ...interface{}) error {
-	return errors.New(fmt.Sprintf(msg, args...))
+	return fmt.Errorf(msg, args...)
 }
 
 // Value holds the values that can be put into the database or retrieved from it.
@@ -528,7 +536,7 @@ func (db *MDB) ParseFieldValues(table string, field string, data []string) ([]Va
 	}
 	t := ToBaseType(db.MustGetFieldType(table, field))
 	result := make([]Value, 0, len(data))
-	for i, _ := range data {
+	for i := range data {
 		switch t {
 		case DBInt:
 			j, err := strconv.ParseInt(data[i], 10, 64)
@@ -701,7 +709,7 @@ func (db *MDB) ListItems(table string, limit int64) ([]Item, error) {
 	}
 	defer rows.Close()
 	results := make([]Item, 0)
-	var c int64 = 0
+	var c int64
 	for rows.Next() {
 		var datum sql.NullInt64
 		if err := rows.Scan(&datum); err == nil && datum.Valid {
@@ -728,9 +736,8 @@ func (db *MDB) Get(table string, item Item, field string) ([]Value, error) {
 	}
 	if db.IsListField(table, field) {
 		return db.getListField(table, item, field)
-	} else {
-		return db.getSingleField(table, item, field)
 	}
+	return db.getSingleField(table, item, field)
 }
 
 func (db *MDB) getSingleField(table string, item Item, field string) ([]Value, error) {
@@ -876,7 +883,7 @@ func (db *MDB) Set(table string, item Item, field string, data []Value) error {
 		return Fail("no value given to set in %s %d %s", table, item, field)
 	}
 	t := ToBaseType(db.MustGetFieldType(table, field))
-	for i, _ := range data {
+	for i := range data {
 		if data[i].Sort != t {
 			return Fail("type error %s %d %s: expected %s, encountered %s",
 				table, item, field, GetUserTypeString(t), GetUserTypeString(data[i].Sort))
@@ -924,7 +931,7 @@ func (db *MDB) setListFields(table string, item Item, field string, data []Value
 		return err
 	}
 
-	for i, _ := range data {
+	for i := range data {
 		switch data[i].Sort {
 		case DBInt:
 			_, err = tx.Exec(fmt.Sprintf(`INSERT INTO %s(%s,Owner) VALUES(?,?)`, tableName, field),
@@ -971,7 +978,7 @@ func (db *MDB) GetFields(table string) ([]Field, error) {
 	return result, nil
 }
 
-// Get the tables in the database.
+// GetTables returns the tables in the database.
 func (db *MDB) GetTables() []string {
 	result := make([]string, 0)
 	rows, err := db.base.Query(`SELECT Name FROM _TABLES;`)
@@ -999,18 +1006,31 @@ type QuerySort int
 
 // The sorts of query entries.
 const (
+	// ParseError indicates that query parsing was unsuccessful.
 	ParseError QuerySort = iota + 1
+	// TableString is the type of a string for a table, e.g. "Person".
 	TableString
+	// QueryString is the type of a string for a query, i.e., what's right of "=".
 	QueryString
+	// LogicalAnd is the type of "and".
 	LogicalAnd
+	// LogicalOr is the type of "or".
 	LogicalOr
+	// LogicalNot is the type of "not".
 	LogicalNot
+	// FieldString is the type of a string for a field, e.g. "name".
 	FieldString
+	// SearchClause is the type of a main search clause (outermost level of a query).
 	SearchClause
+	// NoTerm is the type of "no" in a list-field query like "Person no name=John".
 	NoTerm
+	// EveryTerm is the type of "every" in a list-field query like "Person every name=%s%".
 	EveryTerm
+	// LeftParen is the type of "(" and variants, used internally.
 	LeftParen
+	// RightParen is the type of ")" and variants, used internally.
 	RightParen
+	// InfixOP is the type of "=".
 	InfixOP
 )
 
@@ -1133,6 +1153,9 @@ func (db *MDB) toSqlSearchTerm(q *Query, table string,
 			return "", Fail("field '%s' does not exist in table '%s'", fieldName, table)
 		}
 		searchTerm, err := db.toSqlSearchTerm(&(*q).Children[1], table, fieldDescs, paramStartIdx)
+		if err != nil {
+			return "", Fail("syntax error in query: %s", err)
+		}
 		*paramStartIdx++
 		*fieldDescs = append(*fieldDescs, fieldDesc{fieldName, 1, []bool{true}, *paramStartIdx})
 		sort := db.MustGetFieldType(table, fieldName)

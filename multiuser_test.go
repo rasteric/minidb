@@ -19,24 +19,24 @@ func TestMultiDB(t *testing.T) {
 	p := DefaultParams()
 	salt := GenerateExternalSalt(p)
 	key := GenerateKey("a test password", salt, p)
-	user1, errcode, err := db.NewUser("John", "john@test.com", key)
+	user1, _, err := db.NewUser("John", "john@test.com", key)
 	if err != nil {
 		t.Errorf(`could not create new user "John", %s`, err)
 	}
 	salt2 := GenerateExternalSalt(p)
 	key2 := GenerateKey("another password", salt2, p)
-	user2, errcode, err := db.NewUser("Bob", "bob@testing.com", key2)
+	user2, _, err := db.NewUser("Bob", "bob@testing.com", key2)
 	if err != nil {
 		t.Errorf(`could not create new user "Bob", %s`, err)
 	}
 	salt3 := GenerateExternalSalt(p)
 	key3 := GenerateKey("some password", salt3, p)
-	_, errcode, err = db.NewUser("John", "joey@test.com", key3)
+	_, errcode, _ := db.NewUser("John", "joey@test.com", key3)
 	if errcode != ErrUsernameInUse {
 		t.Errorf(`expected errcode=%d for NewUser on existing username, given %d`, ErrUsernameInUse, errcode)
 	}
 	// The following line is bad practice, you should never re-use salts and passwords.
-	_, errcode, err = db.NewUser("Johnny", "john@test.com", key3)
+	_, errcode, _ = db.NewUser("Johnny", "john@test.com", key3)
 	if errcode != ErrEmailInUse {
 		t.Errorf(`expected errcode=%d for NewUser on existing email, given %d`, ErrEmailInUse, errcode)
 	}

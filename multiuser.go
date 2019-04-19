@@ -16,9 +16,9 @@ import (
 
 // Params contain all the parameters that are used by a multiuser database.
 type Params struct {
-	Argon2_Memory      uint32
-	Argon2_Iterations  uint32
-	Argon2_Parallelism uint8
+	Argon2Memory       uint32
+	Argon2Iterations   uint32
+	Argon2Parallelism  uint8
 	KeyLength          uint32
 	InternalSaltLength uint32
 	ExternalSaltLength uint32
@@ -32,29 +32,32 @@ func DefaultParams() *Params {
 		KeyLength:          512,
 		InternalSaltLength: 256,
 		ExternalSaltLength: 256,
-		Argon2_Memory:      64 * 1024,
-		Argon2_Iterations:  3,
-		Argon2_Parallelism: 4}
+		Argon2Memory:       64 * 1024,
+		Argon2Iterations:   3,
+		Argon2Parallelism:  4}
 	return &p
 }
 
 func (p *Params) validate() bool {
 	if p.KeyLength >= 64 && p.InternalSaltLength >= 32 &&
-		p.ExternalSaltLength >= 32 && p.Argon2_Memory >= 16*1024 && p.Argon2_Iterations >= 2 {
+		p.ExternalSaltLength >= 32 && p.Argon2Memory >= 16*1024 && p.Argon2Iterations >= 2 {
 		return true
 	}
 	return false
 }
 
+// User represents a user.
 type User struct {
 	name string
 	id   Item
 }
 
+// Name returns the name of the user.
 func (u *User) Name() string {
 	return u.name
 }
 
+// ID returns the ID of the user.
 func (u *User) ID() Item {
 	return u.id
 }
@@ -86,10 +89,13 @@ func NewMultiDB(basedir string, driver string) (*MultiDB, error) {
 	return thedb, nil
 }
 
+// UserDir returns the given user's directory where the user database is stored.
 func (m *MultiDB) UserDir(user *User) string {
 	return filepath.Join(m.basepath, user.name)
 }
 
+// BaseDir returns the base directory of the multiuser database. This directory contains databases
+// for all users.
 func (m *MultiDB) BaseDir() string {
 	return m.basepath
 }
@@ -118,6 +124,8 @@ func validDir(dir string) bool {
 	return true
 }
 
+// CreateDirIfNotExists creates a directory including all subdirectories needed,
+// or returns an error.
 func CreateDirIfNotExist(dir string) error {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		err = os.MkdirAll(dir, 0755)
@@ -170,7 +178,7 @@ const (
 )
 
 func (m *MultiDB) isExisting(field, query string) bool {
-	q, err := ParseQuery(fmt.Sprintf("User %s=%s", field, query))
+	q, _ := ParseQuery(fmt.Sprintf("User %s=%s", field, query))
 	results, err := m.system.Find(q, 1)
 	if err != nil || len(results) < 1 {
 		return false
@@ -184,7 +192,7 @@ func (m *MultiDB) userID(username string) Item {
 		return 0
 	}
 	results, err := m.system.Find(q, 1)
-	if len(results) != 1 {
+	if err != nil || len(results) != 1 {
 		return 0
 	}
 	return results[0]
@@ -247,6 +255,9 @@ func (m *MultiDB) NewUser(username, email string, key *saltedKey) (*User, ErrCod
 	}
 	defer tx.Rollback()
 	user.id, err = m.system.NewItem("User")
+	if err != nil {
+		return nil, ErrDBFail, err
+	}
 	if err := m.system.Set("User", user.id, "Username", []Value{NewString(username)}); err != nil {
 		return nil, ErrDBFail, err
 	}
@@ -262,8 +273,8 @@ func (m *MultiDB) NewUser(username, email string, key *saltedKey) (*User, ErrCod
 		return nil, ErrDBFail, Fail(`could not store salt in multiuser database: %s`, err)
 	}
 	realkey := argon2.IDKey(key.pwd,
-		salt, key.p.Argon2_Iterations, key.p.Argon2_Memory,
-		key.p.Argon2_Parallelism, key.p.KeyLength)
+		salt, key.p.Argon2Iterations, key.p.Argon2Memory,
+		key.p.Argon2Parallelism, key.p.KeyLength)
 	if err := m.system.Set("User", user.id, "Key", []Value{NewBytes(realkey)}); err != nil {
 		return nil, ErrDBFail, Fail(`could not store key in multiuser database: %s`, err)
 	}
@@ -346,7 +357,7 @@ func (key *saltedKey) validate() (ErrCode, error) {
 	return OK, nil
 }
 
-// Key takes a password and some salt, and generates a salted key of length 64 bytes.
+// GenerateKey takes a password and some salt, and generates a salted key of length 64 bytes.
 // Use the ExternalSalt as salt and the original, unaltered password. The function
 // use Blake2b-512 for key derivation.
 func GenerateKey(password string, salt []byte, params *Params) *saltedKey {
@@ -392,8 +403,8 @@ func (m *MultiDB) Authenticate(username string, key *saltedKey) (*User, ErrCode,
 			Fail(`invalid params, user "%s"'s internal salt length does not match internal salt length in params, given %d, expected %d`, username, len(salt), key.p.InternalSaltLength)
 	}
 	keyA := argon2.IDKey(key.pwd,
-		salt, key.p.Argon2_Iterations, key.p.Argon2_Memory,
-		key.p.Argon2_Parallelism, key.p.KeyLength)
+		salt, key.p.Argon2Iterations, key.p.Argon2Memory,
+		key.p.Argon2Parallelism, key.p.KeyLength)
 	keyresult, err := m.system.Get("User", user.id, "Key")
 	if err != nil || len(keyresult) != 1 {
 		return nil, ErrAuthenticationFailed,
@@ -502,7 +513,7 @@ func (m *MultiDB) Delete() (ErrCode, error) {
 	return OK, nil
 }
 
-// Archive stores the user data in a packed zip file but does not close or remove the user.
+// ArchiveUser stores the user data in a packed zip file but does not close or remove the user.
 // This can be used for backups or for archiving.
 func (m *MultiDB) ArchiveUser(user *User, archivedir string) (ErrCode, error) {
 	db, reply, err := m.UserDB(user)

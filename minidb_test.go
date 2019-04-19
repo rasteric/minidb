@@ -176,7 +176,7 @@ func TestParseFieldDesc(t *testing.T) {
 		if err != nil {
 			t.Errorf("ParseFieldDesc() failed on table test")
 		}
-		for i, _ := range table.out {
+		for i := range table.out {
 			if table.out[i] != result[i] {
 				t.Errorf("ParseFieldDesc(%s) incorrect result", table.in)
 			}
@@ -361,11 +361,11 @@ func TestMDB(t *testing.T) {
 	if count, _ := db.Count("schmoo"); count != 0 {
 		t.Errorf("MDB.Count() > 0 for nonextistent table")
 	}
-	items, err := db.ListItems("test", 1024)
+	items, _ := db.ListItems("test", 1024)
 	if items[0] != item {
 		t.Errorf("MDB.ListItems(), expected %d, given %d", item, items[0])
 	}
-	items, err = db.ListItems("schmoo", 1024)
+	items, _ = db.ListItems("schmoo", 1024)
 	if err == nil {
 		t.Errorf("MDB.ListItems() should return error for nonextistent table, given no error")
 	}
@@ -518,9 +518,9 @@ func TestMDB(t *testing.T) {
 	e[5] = "Misc"
 	e[6] = "Data"
 	e[7] = "Schedules"
-	for i, _ := range fields {
+	for i := range fields {
 		found := false
-		for j, _ := range e {
+		for j := range e {
 			if fields[i].Name == e[j] {
 				found = true
 			}
@@ -538,9 +538,9 @@ func TestMDB(t *testing.T) {
 	q[5] = DBBlob
 	q[6] = DBBlobList
 	q[7] = DBDateList
-	for i, _ := range fields {
+	for i := range fields {
 		found := false
-		for j, _ := range q {
+		for j := range q {
 			if fields[i].Sort == q[j] {
 				found = true
 			}
@@ -808,7 +808,7 @@ func TestFind(t *testing.T) {
 			}
 		}
 		// Data blob list field
-		for j, _ := range v.Blobs {
+		for j := range v.Blobs {
 			query := fmt.Sprintf("test Data=%s", v.Blobs[j])
 			q, err := ParseQuery(query)
 			if err != nil {
@@ -863,10 +863,8 @@ func TestBackup(t *testing.T) {
 }
 
 func setup() {
-	var err error
-	tmpfile, err = ioutil.TempFile("", "minidb-testing-*")
-	tmpfile2, err = ioutil.TempFile("", "minidb-testing-*")
-	_ = err
+	tmpfile, _ = ioutil.TempFile("", "minidb-testing-*")
+	tmpfile2, _ = ioutil.TempFile("", "minidb-testing-*")
 }
 
 func teardown() {

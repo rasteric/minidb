@@ -93,10 +93,7 @@ func newPstate(s string) *pstate {
 
 // start the parsing (like a start rule)
 func start(state *pstate) error {
-	if err := parseSearchClause(state); err != nil {
-		return err
-	}
-	return nil
+	return parseSearchClause(state)
 }
 
 // consume one literal token or just lookahead
@@ -147,10 +144,7 @@ func parseSearch(state *pstate) error {
 	if err := parseInfixOP(state); err != nil {
 		return err
 	}
-	if err := parseSearchQuery(state); err != nil {
-		return err
-	}
-	return nil
+	return parseSearchQuery(state)
 }
 
 func maybeParseParens(state *pstate) error {
@@ -235,9 +229,7 @@ func parseSearchClause(state *pstate) error {
 	if err := parseTable(state); err != nil {
 		return err
 	}
-	if err := parseComplexExpr(state); err != nil {
-		return err
-	}
+	parseComplexExpr(state)
 	return nil
 }
 
