@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Represents a command in Exec().
+// CommandID represents the type of a command in the Exec() function.
 type CommandID int
 
 // The actual Exec() CommandID values. Names mirror the respective functions.
@@ -52,9 +52,11 @@ const (
 	CmdListDate
 	CmdSetDateStr
 	CmdFieldIsEmpty
+	CmdBackup
+	CmdRemoveItem
 )
 
-// A database that has been opened.
+// CommandDB is the database that has been opened.
 type CommandDB string
 
 // Command structures contains all information needed to execute an arbitrary command.
@@ -119,6 +121,8 @@ const (
 	ErrFieldExistsFailed
 	ErrGetFieldsFailed
 	ErrInvalidDate
+	ErrBackupFailed
+	ErrRemoveItemFailed
 )
 
 func getDB(cmd *Command) (*MDB, *Result) {
@@ -133,6 +137,7 @@ func getDB(cmd *Command) (*MDB, *Result) {
 	return nil, &r
 }
 
+// CloseAllDBs closes all open DB connections and cleans up resources.
 func CloseAllDBs() {
 	mutex.Lock()
 	defer mutex.Unlock()
@@ -228,6 +233,13 @@ func Exec(cmd *Command) *Result {
 			r.Int = ErrGetFailed
 			r.Str = err.Error()
 		}
+	case CmdBackup:
+		err = theDB.Backup(cmd.StrArgs[0])
+		if err != nil {
+			r.HasError = true
+			r.Int = ErrBackupFailed
+			r.Str = err.Error()
+		}
 	case CmdGetTables:
 		r.Strings = theDB.GetTables()
 	case CmdIsListField:
@@ -263,6 +275,13 @@ func Exec(cmd *Command) *Result {
 		if err != nil {
 			r.HasError = true
 			r.Int = ErrSetFailed
+			r.Str = err.Error()
+		}
+	case CmdRemoveItem:
+		err = theDB.RemoveItem(cmd.StrArgs[0], cmd.ItemArg)
+		if err != nil {
+			r.HasError = true
+			r.Int = ErrRemoveItemFailed
 			r.Str = err.Error()
 		}
 	case CmdTableExists:
@@ -350,6 +369,7 @@ func Exec(cmd *Command) *Result {
 	return &r
 }
 
+// OpenCommand returns a pointer to a command structure for mdb.Open().
 func OpenCommand(driver string, file string) *Command {
 	return &Command{
 		ID:      CmdOpen,
@@ -357,6 +377,7 @@ func OpenCommand(driver string, file string) *Command {
 	}
 }
 
+// AddTableCommand returns a pointer to a command structure for mdb.AddTable().
 func AddTableCommand(db CommandDB, table string, fields []Field) *Command {
 	return &Command{
 		ID:        CmdAddTable,
@@ -366,6 +387,7 @@ func AddTableCommand(db CommandDB, table string, fields []Field) *Command {
 	}
 }
 
+// CloseCommand returns a pointer to a command structure for mdb.Close().
 func CloseCommand(db CommandDB) *Command {
 	return &Command{
 		ID: CmdClose,
@@ -373,6 +395,7 @@ func CloseCommand(db CommandDB) *Command {
 	}
 }
 
+// CountCommand returns a pointer to a command structure for mdb.Count()
 func CountCommand(db CommandDB, table string) *Command {
 	return &Command{
 		ID:      CmdCount,
@@ -381,6 +404,7 @@ func CountCommand(db CommandDB, table string) *Command {
 	}
 }
 
+// FieldExistsCommand returns a pointer to a command structure for mdb.FieldExists().
 func FieldExistsCommand(db CommandDB, table string, field string) *Command {
 	return &Command{
 		ID:      CmdFieldExists,
@@ -389,6 +413,7 @@ func FieldExistsCommand(db CommandDB, table string, field string) *Command {
 	}
 }
 
+// FieldIsNullCommand returns a pointer to a command structure for mdb.FieldIsNull().
 func FieldIsNullCommand(db CommandDB, item Item, field string) *Command {
 	return &Command{
 		ID:      CmdFieldIsNull,
@@ -398,6 +423,7 @@ func FieldIsNullCommand(db CommandDB, item Item, field string) *Command {
 	}
 }
 
+// FieldIsEmptyCommand returns a pointer to a command structure for mdb.FieldIsEmpty().
 func FieldIsEmptyCommand(db CommandDB, item Item, field string) *Command {
 	return &Command{
 		ID:      CmdFieldIsEmpty,
@@ -407,6 +433,7 @@ func FieldIsEmptyCommand(db CommandDB, item Item, field string) *Command {
 	}
 }
 
+// FindCommand returns a pointer to a command structure for mdb.Find().
 func FindCommand(db CommandDB, query *Query, limit int64) *Command {
 	return &Command{
 		ID:       CmdFind,
@@ -415,6 +442,8 @@ func FindCommand(db CommandDB, query *Query, limit int64) *Command {
 		IntArg:   limit,
 	}
 }
+
+// GetCommand returns a pointer to a command structure for mdb.Get().
 func GetCommand(db CommandDB, table string, item Item, field string) *Command {
 	return &Command{
 		ID:      CmdGet,
@@ -424,6 +453,7 @@ func GetCommand(db CommandDB, table string, item Item, field string) *Command {
 	}
 }
 
+// GetFieldsCommand returns a pointer to a command structure for mdb.GetFields().
 func GetFieldsCommand(db CommandDB, table string) *Command {
 	return &Command{
 		ID:      CmdGetFields,
@@ -432,6 +462,7 @@ func GetFieldsCommand(db CommandDB, table string) *Command {
 	}
 }
 
+// GetTablesCommand returns a pointer to a command structure for mdb.GetTables().
 func GetTablesCommand(db CommandDB) *Command {
 	return &Command{
 		ID: CmdGetTables,
@@ -439,6 +470,7 @@ func GetTablesCommand(db CommandDB) *Command {
 	}
 }
 
+// IsEmptyListFieldCommand returns a pointer to a command structure for mdb.IsEmptyListField().
 func IsEmptyListFieldCommand(db CommandDB, table string, item Item, field string) *Command {
 	return &Command{
 		ID:      CmdIsEmptyListField,
@@ -448,6 +480,7 @@ func IsEmptyListFieldCommand(db CommandDB, table string, item Item, field string
 	}
 }
 
+// IsListFieldCommand returns a pointer to a command structure for mdb.IsListField().
 func IsListFieldCommand(db CommandDB, table string, field string) *Command {
 	return &Command{
 		ID:      CmdIsListField,
@@ -456,6 +489,7 @@ func IsListFieldCommand(db CommandDB, table string, field string) *Command {
 	}
 }
 
+// ItemExistsCommand returns a pointer to a command structure for mdb.ItemExists().
 func ItemExistsCommand(db CommandDB, table string, item Item) *Command {
 	return &Command{
 		ID:      CmdItemExists,
@@ -465,6 +499,7 @@ func ItemExistsCommand(db CommandDB, table string, item Item) *Command {
 	}
 }
 
+// ListItemsCommand returns a pointer to a command structure for mdb.ListItems().
 func ListItemsCommand(db CommandDB, table string, limit int64) *Command {
 	return &Command{
 		ID:      CmdListItems,
@@ -473,6 +508,8 @@ func ListItemsCommand(db CommandDB, table string, limit int64) *Command {
 		IntArg:  limit,
 	}
 }
+
+// MustGetFieldTypeCommand returns a pointer to a command structure for mdb.MustGetFieldType().
 func MustGetFieldTypeCommand(db CommandDB, table string, field string) *Command {
 	return &Command{
 		ID:      CmdMustGetFieldType,
@@ -481,6 +518,7 @@ func MustGetFieldTypeCommand(db CommandDB, table string, field string) *Command 
 	}
 }
 
+// NewItemCommand returns a pointer to a command structure for mdb.NewItem().
 func NewItemCommand(db CommandDB, table string) *Command {
 	return &Command{
 		ID:      CmdNewItem,
@@ -489,6 +527,7 @@ func NewItemCommand(db CommandDB, table string) *Command {
 	}
 }
 
+// ParseFieldValuesCommand returns a pointer to a command structure for mdb.ParseFieldValues().
 func ParseFieldValuesCommand(db CommandDB, table string, field string, data []string) *Command {
 	cmd := Command{
 		ID: CmdParseFieldValues,
@@ -503,6 +542,7 @@ func ParseFieldValuesCommand(db CommandDB, table string, field string, data []st
 	return &cmd
 }
 
+// SetCommand returns a pointer to a command structure for mdb.Set().
 func SetCommand(db CommandDB, table string, item Item, field string, data []Value) *Command {
 	return &Command{
 		ID:        CmdSet,
@@ -513,6 +553,7 @@ func SetCommand(db CommandDB, table string, item Item, field string, data []Valu
 	}
 }
 
+// TableExistsCommand returns a pointer to a command structure for mdb.TableExists().
 func TableExistsCommand(db CommandDB, table string) *Command {
 	return &Command{
 		ID:      CmdTableExists,
@@ -521,6 +562,7 @@ func TableExistsCommand(db CommandDB, table string) *Command {
 	}
 }
 
+// ToSqlCommand returns a pointer to a command structure for mdb.ToSql().
 func ToSqlCommand(db CommandDB, table string, query *Query, limit int64) *Command {
 	return &Command{
 		ID:       CmdToSQL,
@@ -531,6 +573,7 @@ func ToSqlCommand(db CommandDB, table string, query *Query, limit int64) *Comman
 	}
 }
 
+// GetIntCommand returns a pointer to a command structure for mdb.GetInt().
 func GetIntCommand(db CommandDB, key int64) *Command {
 	return &Command{
 		ID:     CmdGetInt,
@@ -539,6 +582,7 @@ func GetIntCommand(db CommandDB, key int64) *Command {
 	}
 }
 
+// GetStrCommand returns a pointer to a command structure for mdb.GetStr().
 func GetStrCommand(db CommandDB, key int64) *Command {
 	return &Command{
 		ID:     CmdGetStr,
@@ -547,6 +591,7 @@ func GetStrCommand(db CommandDB, key int64) *Command {
 	}
 }
 
+// GetBlobCommand returns a pointer to a command structure for mdb.GetBlob().
 func GetBlobCommand(db CommandDB, key int64) *Command {
 	return &Command{
 		ID:     CmdGetBlob,
@@ -555,6 +600,7 @@ func GetBlobCommand(db CommandDB, key int64) *Command {
 	}
 }
 
+// GetDateCommand returns a pointer to a command structure for mdb.GetDate().
 func GetDateCommand(db CommandDB, key int64) *Command {
 	return &Command{
 		ID:     CmdGetDate,
@@ -563,6 +609,7 @@ func GetDateCommand(db CommandDB, key int64) *Command {
 	}
 }
 
+// SetIntCommand returns a pointer to a command structure for mdb.SetInt().
 func SetIntCommand(db CommandDB, key int64, value int64) *Command {
 	return &Command{
 		ID:      CmdSetInt,
@@ -572,6 +619,7 @@ func SetIntCommand(db CommandDB, key int64, value int64) *Command {
 	}
 }
 
+// SetStrCommand returns a pointer to a command structure for mdb.SetStr().
 func SetStrCommand(db CommandDB, key int64, value string) *Command {
 	return &Command{
 		ID:      CmdSetStr,
@@ -581,6 +629,7 @@ func SetStrCommand(db CommandDB, key int64, value string) *Command {
 	}
 }
 
+// SetBlobCommand returns a pointer to a command structure for mdb.SetBlob().
 func SetBlobCommand(db CommandDB, key int64, value []byte) *Command {
 	return &Command{
 		ID:      CmdSetBlob,
@@ -590,6 +639,7 @@ func SetBlobCommand(db CommandDB, key int64, value []byte) *Command {
 	}
 }
 
+// SetDateCommand returns a pointer to a command structure for mdb.SetDate().
 func SetDateCommand(db CommandDB, key int64, value time.Time) *Command {
 	d := NewDate(value)
 	return &Command{
@@ -600,6 +650,7 @@ func SetDateCommand(db CommandDB, key int64, value time.Time) *Command {
 	}
 }
 
+// SetDateStrCommand returns a pointer to a command structure for mdb.SetDateStr().
 func SetDateStrCommand(db CommandDB, key int64, value string) *Command {
 	return &Command{
 		ID:      CmdSetDateStr,
@@ -609,6 +660,7 @@ func SetDateStrCommand(db CommandDB, key int64, value string) *Command {
 	}
 }
 
+// HasIntCommand returns a pointer to a command structure for mdb.HasInt().
 func HasIntCommand(db CommandDB, key int64) *Command {
 	return &Command{
 		ID:     CmdHasInt,
@@ -617,6 +669,7 @@ func HasIntCommand(db CommandDB, key int64) *Command {
 	}
 }
 
+// HasStr returns a pointer to a command structure for mdb.HasStr().
 func HasStrCommand(db CommandDB, key int64) *Command {
 	return &Command{
 		ID:     CmdHasStr,
@@ -625,6 +678,7 @@ func HasStrCommand(db CommandDB, key int64) *Command {
 	}
 }
 
+// HasBlobCommand returns a pointer to a command structure for mdb.HasBlob().
 func HasBlobCommand(db CommandDB, key int64) *Command {
 	return &Command{
 		ID:     CmdHasBlob,
@@ -633,6 +687,7 @@ func HasBlobCommand(db CommandDB, key int64) *Command {
 	}
 }
 
+// HasDateCommand returns a pointer to a command structure for mdb.HasDate().
 func HasDateCommand(db CommandDB, key int64) *Command {
 	return &Command{
 		ID:     CmdHasDate,
@@ -641,6 +696,7 @@ func HasDateCommand(db CommandDB, key int64) *Command {
 	}
 }
 
+// DeleteIntCommand returns a pointer to a command structure for mdb.DeleteInt().
 func DeleteIntCommand(db CommandDB, key int64) *Command {
 	return &Command{
 		ID:     CmdDeleteInt,
@@ -649,6 +705,7 @@ func DeleteIntCommand(db CommandDB, key int64) *Command {
 	}
 }
 
+// DeleteStrCommand returns a pointer to a command structure for mdb.DeleteStr().
 func DeleteStrCommand(db CommandDB, key int64) *Command {
 	return &Command{
 		ID:     CmdDeleteStr,
@@ -657,6 +714,7 @@ func DeleteStrCommand(db CommandDB, key int64) *Command {
 	}
 }
 
+// DeleteBlobCommand returns a pointer to a command structure for mdb.DeleteBlob().
 func DeleteBlobCommand(db CommandDB, key int64) *Command {
 	return &Command{
 		ID:     CmdDeleteBlob,
@@ -665,6 +723,7 @@ func DeleteBlobCommand(db CommandDB, key int64) *Command {
 	}
 }
 
+// DeleteDateCommand returns a pointer to a command structure for mdb.DeleteDate().
 func DeleteDateCommand(db CommandDB, key int64) *Command {
 	return &Command{
 		ID:     CmdDeleteDate,
@@ -673,6 +732,7 @@ func DeleteDateCommand(db CommandDB, key int64) *Command {
 	}
 }
 
+// ListIntCommand returns a pointer to a command structure for mdb.ListInt().
 func ListIntCommand(db CommandDB) *Command {
 	return &Command{
 		ID: CmdListInt,
@@ -680,6 +740,7 @@ func ListIntCommand(db CommandDB) *Command {
 	}
 }
 
+// ListStrCommand returns a pointer to a command structure for mdb.ListStr().
 func ListStrCommand(db CommandDB) *Command {
 	return &Command{
 		ID: CmdListStr,
@@ -687,6 +748,7 @@ func ListStrCommand(db CommandDB) *Command {
 	}
 }
 
+// ListBlobCommand returns a pointer to a command structure for mdb.ListBlob().
 func ListBlobCommand(db CommandDB) *Command {
 	return &Command{
 		ID: CmdListBlob,
@@ -694,9 +756,29 @@ func ListBlobCommand(db CommandDB) *Command {
 	}
 }
 
+// ListDateCommand returns a pointer to a command structure for mdb.ListDate().
 func ListDateCommand(db CommandDB) *Command {
 	return &Command{
 		ID: CmdListDate,
 		DB: db,
+	}
+}
+
+// BackupCommand returns a pointer to a command structure for mdb.Backup().
+func BackupCommand(db CommandDB, destination string) *Command {
+	return &Command{
+		ID:      CmdBackup,
+		DB:      db,
+		StrArgs: []string{destination},
+	}
+}
+
+// RemoveItemCommand returns a pointer to a command structure for mdb.RemoveItem().
+func RemoveItemCommand(db CommandDB, table string, item Item) *Command {
+	return &Command{
+		ID:      CmdRemoveItem,
+		DB:      db,
+		StrArgs: []string{table},
+		ItemArg: item,
 	}
 }

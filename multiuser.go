@@ -11,22 +11,27 @@ import (
 
 	"github.com/rasteric/packdir"
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/blake2b"
 )
 
+// Params contain all the parameters that are used by a multiuser database.
 type Params struct {
 	Argon2_Memory      uint32
 	Argon2_Iterations  uint32
 	Argon2_Parallelism uint8
 	KeyLength          uint32
-	SaltLength         uint32
-	WeakSaltLength     uint32
+	InternalSaltLength uint32
+	ExternalSaltLength uint32
 }
 
+// DefaultParams returns parameters with reasonable default values that are safe to use.
+// Be aware that default parameters may change from release to release to reflect
+// updates and changes in security requirements.
 func DefaultParams() *Params {
 	p := Params{
 		KeyLength:          512,
-		SaltLength:         256,
-		WeakSaltLength:     128,
+		InternalSaltLength: 256,
+		ExternalSaltLength: 256,
 		Argon2_Memory:      64 * 1024,
 		Argon2_Iterations:  3,
 		Argon2_Parallelism: 4}
@@ -34,8 +39,8 @@ func DefaultParams() *Params {
 }
 
 func (p *Params) validate() bool {
-	if p.KeyLength >= 64 && p.SaltLength >= 32 &&
-		p.WeakSaltLength >= 32 && p.Argon2_Memory >= 16*1024 && p.Argon2_Iterations >= 2 {
+	if p.KeyLength >= 64 && p.InternalSaltLength >= 32 &&
+		p.ExternalSaltLength >= 32 && p.Argon2_Memory >= 16*1024 && p.Argon2_Iterations >= 2 {
 		return true
 	}
 	return false
@@ -54,6 +59,8 @@ func (u *User) ID() Item {
 	return u.id
 }
 
+// MultiDB contains all information needed for housekeeping multiple DBs, except for the parameters
+// and context-specific information like passwords.
 type MultiDB struct {
 	basepath string
 	driver   string
@@ -63,7 +70,7 @@ type MultiDB struct {
 
 // NewMultiDB returns a new multi user database.
 func NewMultiDB(basedir string, driver string) (*MultiDB, error) {
-	d := filepath.Dir(basedir)
+	d := filepath.Clean(basedir)
 	if !validDir(d) {
 		return nil, Fail(`the base directory "%s" does not exist or has incorrect permissions`, d)
 	}
@@ -80,15 +87,15 @@ func NewMultiDB(basedir string, driver string) (*MultiDB, error) {
 }
 
 func (m *MultiDB) UserDir(user *User) string {
-	return filepath.Dir(m.basepath) + string(os.PathSeparator) + user.name
+	return filepath.Join(m.basepath, user.name)
 }
 
 func (m *MultiDB) BaseDir() string {
-	return filepath.Dir(m.basepath)
+	return m.basepath
 }
 
 func (m *MultiDB) userFile(user *User, file string) string {
-	return filepath.Dir(m.UserDir(user)) + string(os.PathSeparator) + file
+	return filepath.Join(m.UserDir(user), file)
 }
 
 func (m *MultiDB) userDBFile(user *User) string {
@@ -96,7 +103,7 @@ func (m *MultiDB) userDBFile(user *User) string {
 }
 
 func (m *MultiDB) systemDBFile() string {
-	return m.BaseDir() + string(os.PathSeparator) + "system.sqlite"
+	return filepath.Join(m.BaseDir(), "system.sqlite")
 }
 
 func validUserName(name string) bool {
@@ -138,15 +145,28 @@ func validateUser(name string, basedir string) error {
 	return nil
 }
 
+// ErrCode types represent errors instead of error structures.
+type ErrCode int
+
+// Error codes returned by the functions.
 const (
-	OK int = iota + 1
-	FAIL
-	UsernameInUse
-	EmailInUse
-	CryptoRandFailure
-	InvalidParams
-	UnknownUser
-	AuthenticationFailed
+	ErrAuthenticationFailed ErrCode = iota + 1 // User authentication has failed (wrong password).
+	OK                                         // No error has occured.
+	ErrUsernameInUse                           // The user name is already being used.
+	ErrEmailInUse                              // The email is already being used.
+	ErrCryptoRandFailure                       // The random number generator has failed.
+	ErrInvalidParams                           // One or more parameters were invalid.
+	ErrUnknownUser                             // The user is not known.
+	ErrNotEnoughSalt                           // Insufficiently long salt has been supplied.
+	ErrInvalidUser                             // The user name or email is invalid.
+	ErrDBClosed                                // The internal housekeeping DB is locked, corrupted, or closed.
+	ErrDBFail                                  // A database operation has failed.
+	ErrFileSystem                              // A directory of file could not be created.
+	ErrNoHome                                  // The user's DB home directory does not exist.
+	ErrCloseFailed                             // Could not close the user database.
+	ErrOpenFailed                              // Could not open the user database.
+	ErrPackFail                                // Compressing user data failed.
+	ErrInvalidKey                              // A given salted key is invalid (either nil, or other problems).
 )
 
 func (m *MultiDB) isExisting(field, query string) bool {
@@ -187,144 +207,207 @@ func (m *MultiDB) ExistingEmail(email string) bool {
 // certain cases: EmailInUse - the email has already been registered, UsernameInUse - a user with the same
 // user name has already been registered. Both emails and usernames must be unique and cannot be
 // registered twice.
-func (m *MultiDB) NewUser(username, email, password string, params *Params) (*User, int, error) {
+func (m *MultiDB) NewUser(username, email string, key *saltedKey) (*User, ErrCode, error) {
+	// validate inputs
 	if err := validateUser(username, m.BaseDir()); err != nil {
-		return nil, FAIL, err
+		return nil, ErrInvalidUser, err
 	}
-	if !params.validate() {
-		return nil, InvalidParams, Fail(`invalid parameters`)
+	reply, err := key.validate()
+	if err != nil || reply != OK {
+		return nil, reply, err
 	}
 	user := User{name: username}
-	dirpath := m.UserDir(&user)
-	err := CreateDirIfNotExist(dirpath)
-	if err != nil {
-		return nil, FAIL, err
-	}
 	if m.system == nil {
-		return nil, FAIL, Fail(`the internal database was closed or is locked`)
+		return nil, ErrDBClosed, Fail(`internal DB is nil`)
 	}
+	// maybe create the user table
 	if !m.system.TableExists("User") {
 		err := m.system.AddTable("User", []Field{Field{Name: "Username", Sort: DBString},
 			Field{Name: "Email", Sort: DBString},
 			Field{Name: "Key", Sort: DBBlob},
-			Field{Name: "WeakSalt", Sort: DBBlob},
-			Field{Name: "StrongSalt", Sort: DBBlob},
+			Field{Name: "ExternalSalt", Sort: DBBlob},
+			Field{Name: "InternalSalt", Sort: DBBlob},
 			Field{Name: "Created", Sort: DBDate},
 			Field{Name: "Modified", Sort: DBDate}})
 		if err != nil {
-			return nil, FAIL, err
+			return nil, ErrDBFail, err
 		}
 	}
+	// check if user and email exist
 	if m.ExistingUser(username) {
-		return nil, UsernameInUse, Fail(`user "%s" already exists!`, username)
+		return nil, ErrUsernameInUse, Fail(`user "%s" already exists!`, username)
 	}
 	if m.ExistingEmail(email) {
-		return nil, EmailInUse, Fail(`email "%s" is already in use!`, email)
+		return nil, ErrEmailInUse, Fail(`email "%s" is already in use!`, email)
 	}
-	// now start adding the user
+	// now start adding the user in a transaction
 	tx, err := m.system.base.Begin()
 	if err != nil {
-		return nil, FAIL, err
+		return nil, ErrDBFail, err
 	}
 	defer tx.Rollback()
 	user.id, err = m.system.NewItem("User")
 	if err := m.system.Set("User", user.id, "Username", []Value{NewString(username)}); err != nil {
-		return nil, FAIL, err
+		return nil, ErrDBFail, err
 	}
 	if err := m.system.Set("User", user.id, "Email", []Value{NewString(email)}); err != nil {
-		return nil, FAIL, err
+		return nil, ErrDBFail, err
 	}
-	salt := make([]byte, params.SaltLength)
+	salt := make([]byte, key.p.InternalSaltLength)
 	n, err := rand.Read(salt)
-	if uint32(n) != params.SaltLength || err != nil {
-		return nil, CryptoRandFailure, Fail(`random number generator failed to generate salt`)
+	if uint32(n) != key.p.InternalSaltLength || err != nil {
+		return nil, ErrCryptoRandFailure, Fail(`random number generator failed to generate salt`)
 	}
-	if err := m.system.Set("User", user.id, "Salt", []Value{NewBytes(salt)}); err != nil {
-		return nil, FAIL, Fail(`could not store salt in multiuser database: %s`, err)
+	if err := m.system.Set("User", user.id, "InternalSalt", []Value{NewBytes(salt)}); err != nil {
+		return nil, ErrDBFail, Fail(`could not store salt in multiuser database: %s`, err)
 	}
-	key := argon2.IDKey([]byte(password),
-		salt, params.Argon2_Iterations, params.Argon2_Memory,
-		params.Argon2_Parallelism, params.KeyLength)
-	if err := m.system.Set("User", user.id, "Key", []Value{NewBytes(key)}); err != nil {
-		return nil, FAIL, Fail(`could not store key in multiuser database: %s`, err)
+	realkey := argon2.IDKey(key.pwd,
+		salt, key.p.Argon2_Iterations, key.p.Argon2_Memory,
+		key.p.Argon2_Parallelism, key.p.KeyLength)
+	if err := m.system.Set("User", user.id, "Key", []Value{NewBytes(realkey)}); err != nil {
+		return nil, ErrDBFail, Fail(`could not store key in multiuser database: %s`, err)
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, FAIL, Fail(`multiuser database error: %s`, err)
+	if err := m.system.Set("User", user.id, "ExternalSalt", []Value{NewBytes(key.sel)}); err != nil {
+		return nil, ErrDBFail, Fail(`could not store the external salt in multiuser database: %s`, err)
 	}
 	now := NewDate(time.Now())
 	if err := m.system.Set("User", user.id, "Created", []Value{now}); err != nil {
-		return nil, FAIL, err
+		return nil, ErrDBFail, err
 	}
 	if err := m.system.Set("User", user.id, "Modified", []Value{now}); err != nil {
-		return nil, FAIL, err
+		return nil, ErrDBFail, err
+	}
+	dirpath := m.UserDir(&user)
+	err = CreateDirIfNotExist(dirpath)
+	if err != nil {
+		return nil, ErrFileSystem, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, ErrDBFail, Fail(`multiuser database error: %s`, err)
 	}
 	return &user, OK, nil
 }
 
-// UserSalt is the weak salt associated with a user. It is stored in the database and may
-// be used for hashing the password prior to authentication. The weak salt is not used
+// ExternalSalt is the salt associated with a user. It is stored in the database and may
+// be used for hashing the password prior to authentication. The external salt is not used
 // for internal key derivation.
-func (m *MultiDB) UserSalt(username string) ([]byte, int, error) {
+func (m *MultiDB) ExternalSalt(username string) ([]byte, ErrCode, error) {
 	if !m.ExistingUser(username) {
-		return nil, UnknownUser, Fail(`unknown user "%s"`, username)
+		return nil, ErrUnknownUser, Fail(`unknown user "%s"`, username)
 	}
 	id := m.userID(username)
 	if id == 0 {
-		return nil, UnknownUser, Fail(`unknown user "%s"`, username)
+		return nil, ErrUnknownUser, Fail(`unknown user "%s"`, username)
 	}
-	result, err := m.system.Get("Users", id, "WeakSalt")
+	result, err := m.system.Get("User", id, "ExternalSalt")
 	if err != nil || len(result) != 1 {
-		return nil, FAIL, Fail(`user "%s" salt not found, the user database might be corrupted`, username)
+		return nil, ErrNotEnoughSalt, Fail(`user "%s" salt not found, the user database might be corrupted`, username)
 	}
 	return result[0].Bytes(), OK, nil
 }
 
-// Authenticate a user by given name and passwords using the given parameters.
+// GenerateExternalSalt returns some new external salt of the length specified in params.
+// This salt should be passed to NewUser and can be used for passphrase hashing prior to
+// calling NewUser. It is stored in the user database and can be retrieved as ExternalSalt.
+func GenerateExternalSalt(params *Params) []byte {
+	salt := make([]byte, params.ExternalSaltLength)
+	n, err := rand.Read(salt)
+	if err != nil || uint32(n) < params.ExternalSaltLength {
+		return nil
+	}
+	return salt
+}
+
+type saltedKey struct {
+	pwd []byte
+	sel []byte
+	p   *Params
+}
+
+func (key *saltedKey) validate() (ErrCode, error) {
+	if key == nil {
+		return ErrInvalidKey, Fail(`key is nil`)
+	}
+	if key.p == nil {
+		return ErrInvalidParams, Fail(`key parameters are nil`)
+	}
+	if key.pwd == nil {
+		return ErrInvalidKey, Fail(`key password is empty`)
+	}
+	if key.sel == nil {
+		return ErrNotEnoughSalt, Fail(`key salt is nil`)
+	}
+	if !key.p.validate() {
+		return ErrInvalidParams, Fail(`invalid parameters`)
+	}
+	if uint32(len(key.sel)) < key.p.ExternalSaltLength {
+		return ErrNotEnoughSalt, Fail(`external key salt length is less than required by key params`)
+	}
+	return OK, nil
+}
+
+// Key takes a password and some salt, and generates a salted key of length 64 bytes.
+// Use the ExternalSalt as salt and the original, unaltered password. The function
+// use Blake2b-512 for key derivation.
+func GenerateKey(password string, salt []byte, params *Params) *saltedKey {
+	unsalted := blake2b.Sum512([]byte(password))
+	salted := saltedKey{pwd: append(salt, unsalted[:]...), sel: salt, p: params}
+	return &salted
+}
+
+// Authenticate a user by given name and salted password.
 // Returns the user and OK if successful, otherwise nil, a numeric error code and the error.
-func (m *MultiDB) Authenticate(username, password string, params *Params) (*User, int, error) {
+// Notice that the external salt is not passed to this function. Instead, the password string
+// should have been prepared (securely hashed, whitened, etc.) before calling this function
+// on the basis of the user's ExternalSalt.
+func (m *MultiDB) Authenticate(username string, key *saltedKey) (*User, ErrCode, error) {
 	if err := validateUser(username, m.BaseDir()); err != nil {
-		return nil, FAIL, err
+		return nil, ErrInvalidUser, err
 	}
 	if !m.ExistingUser(username) {
-		return nil, UnknownUser, Fail(`user "%s" does not exist`, username)
+		return nil, ErrUnknownUser, Fail(`user "%s" does not exist`, username)
 	}
-	if !params.validate() {
-		return nil, FAIL, Fail(`invalid parameters`)
+	reply, err := key.validate()
+	if err != nil || reply != OK {
+		return nil, reply, err
 	}
 	user := User{name: username}
 	dirpath := m.UserDir(&user)
 	if _, err := os.Stat(dirpath); os.IsNotExist(err) {
-		return nil, FAIL, Fail(`user "%s" home directory does not exist: %s`, username, dirpath)
+		return nil, ErrNoHome, Fail(`user "%s" home directory does not exist: %s`, username, dirpath)
 	}
 	user.id = m.userID(username)
 	if user.id == 0 {
-		return nil, FAIL, Fail(`user "%s" does not exist`, username)
+		return nil, ErrUnknownUser, Fail(`user "%s" does not exist`, username)
 	}
 	// get the strong salt and hash with it using argon2, compare to stored key
-	result, err := m.system.Get("Users", user.id, "StrongSalt")
+	result, err := m.system.Get("User", user.id, "InternalSalt")
 	if err != nil || len(result) != 1 {
-		return nil, FAIL, Fail(`user "%s" strong salt not found, the user database might be corrupted`, username)
+		return nil, ErrNotEnoughSalt,
+			Fail(`user "%s"'s internal salt was not found, the user database might be corrupted`, username)
 	}
 	salt := result[0].Bytes()
-	if len(salt) != int(params.SaltLength) {
-		return nil, InvalidParams, Fail(`invalid params, user "%s" salt length does not match selt length in params, given %d, expected %d`, username, len(salt), params.SaltLength)
+	if len(salt) != int(key.p.InternalSaltLength) {
+		return nil, ErrInvalidParams,
+			Fail(`invalid params, user "%s"'s internal salt length does not match internal salt length in params, given %d, expected %d`, username, len(salt), key.p.InternalSaltLength)
 	}
-	keyA := argon2.IDKey([]byte(password),
-		salt, params.Argon2_Iterations, params.Argon2_Memory,
-		params.Argon2_Parallelism, params.KeyLength)
-	keyresult, err := m.system.Get("Users", user.id, "Key")
+	keyA := argon2.IDKey(key.pwd,
+		salt, key.p.Argon2_Iterations, key.p.Argon2_Memory,
+		key.p.Argon2_Parallelism, key.p.KeyLength)
+	keyresult, err := m.system.Get("User", user.id, "Key")
 	if err != nil || len(keyresult) != 1 {
-		return nil, FAIL, Fail(`user "%s" key was not found in user database, the database might be corrupted`, username)
+		return nil, ErrAuthenticationFailed,
+			Fail(`user "%s" key was not found in user database, the database might be corrupted`, username)
 	}
 	keyB := keyresult[0].Bytes()
 	if !bytes.Equal(keyA, keyB) {
-		return nil, AuthenticationFailed, Fail(`authentication failure`)
+		return nil, ErrAuthenticationFailed, Fail(`authentication failure`)
 	}
 	return &user, OK, nil
 }
 
 // Close the MultiDB, closing the internal housekeeping and all open user databases.
-func (m *MultiDB) Close() error {
+func (m *MultiDB) Close() (ErrCode, error) {
 	errcount := 0
 	s := ""
 	for _, v := range m.userdbs {
@@ -344,39 +427,49 @@ func (m *MultiDB) Close() error {
 		errcount++
 	}
 	if errcount > 0 {
-		return Fail(`errors closing multi user DB: %s`, s)
+		return ErrCloseFailed, Fail(`errors closing multi user DB: %s`, s)
 	}
-	return nil
+	return OK, nil
 }
 
 // UserDB returns the database of the given user.
-func (m *MultiDB) UserDB(user *User) (*MDB, error) {
+func (m *MultiDB) UserDB(user *User) (*MDB, ErrCode, error) {
 	var err error
 	if user.id == 0 {
-		return nil, Fail(`user "%s" does not exist`, user.name)
+		return nil, ErrUnknownUser, Fail(`user "%s" does not exist`, user.name)
 	}
 	db := m.userdbs[user.id]
 	if db == nil {
 		db, err = Open(m.driver, m.userDBFile(user))
 		if err != nil {
-			return nil, err
+			return nil, ErrOpenFailed, err
 		}
 	}
-	return db, nil
+	return db, OK, nil
 }
 
 // DeleteUserContent deletes a user's content in the multiuser database, i.e., all the user data.
 // This action cannot be undone.
-func (m *MultiDB) DeleteUserContent(user *User) error {
-	db, _ := m.UserDB(user)
+func (m *MultiDB) DeleteUserContent(user *User) (ErrCode, error) {
+	db, _, _ := m.UserDB(user)
 	db.Close()
-	return removeContents(m.UserDir(user))
+	if err := removeContents(m.UserDir(user)); err != nil {
+		return ErrFileSystem, err
+	}
+	return OK, nil
 }
 
 // DeleteUser deletes a user and all associated user content from a multiuser database.
-func (m *MultiDB) DeleteUser(user *User) error {
-	// todo
-	return nil
+func (m *MultiDB) DeleteUser(user *User) (ErrCode, error) {
+	if err := m.system.RemoveItem("User", user.ID()); err != nil {
+		return ErrDBFail, err
+	}
+	errcode, err := m.DeleteUserContent(user)
+	delete(m.userdbs, user.ID())
+	if err != nil {
+		return errcode, err
+	}
+	return OK, nil
 }
 
 func removeContents(dir string) error {
@@ -400,35 +493,54 @@ func removeContents(dir string) error {
 
 // Delete deletes the whole multiuser db including all housekeeping information and directories.
 // This action cannot be undone.
-func (m *MultiDB) Delete() error {
+func (m *MultiDB) Delete() (ErrCode, error) {
 	m.Close()
 	m.system.Close()
-	return removeContents(m.BaseDir())
+	if err := removeContents(m.BaseDir()); err != nil {
+		return ErrFileSystem, err
+	}
+	return OK, nil
 }
 
 // Archive stores the user data in a packed zip file but does not close or remove the user.
 // This can be used for backups or for archiving.
-func (m *MultiDB) ArchiveUser(user *User, archivedir string) error {
-	db, err := m.UserDB(user)
+func (m *MultiDB) ArchiveUser(user *User, archivedir string) (ErrCode, error) {
+	db, reply, err := m.UserDB(user)
 	if err != nil {
-		return err
+		return reply, err
 	}
 	if err := db.Close(); err != nil {
-		return err
+		return ErrCloseFailed, err
 	}
 	source := m.UserDir(user)
 	filename := fmt.Sprintf("%s-%d_%s.multidb", user.Name(), int64(user.ID()), time.Now().UTC().Format(time.RFC3339))
 	result, err := packdir.Pack(source, filename, archivedir, packdir.GOOD_COMPRESSION, 0)
 	if err != nil {
-		return err
+		return ErrPackFail, err
 	}
 	if result.ScanErrNum > 0 {
-		return Fail(`archiving failed, unable to pack %d files (insufficient permissions?)`, result.ScanErrNum)
+		return ErrFileSystem,
+			Fail(`archiving failed, unable to pack %d files (insufficient permissions?)`, result.ScanErrNum)
 	}
 	if result.ArchiveErrNum > 0 {
-		return Fail(`archiving failed, %d files were not properly archived (insufficient permissions?)`,
-			result.ArchiveErrNum)
+		return ErrPackFail,
+			Fail(`archiving failed, %d files were not properly archived (insufficient permissions?)`,
+				result.ArchiveErrNum)
 	}
 	delete(m.userdbs, user.ID())
-	return nil
+	return OK, nil
+}
+
+func (m *MultiDB) UserEmail(user *User) (string, ErrCode, error) {
+	if user == nil || !m.ExistingUser(user.name) {
+		return "", ErrUnknownUser, Fail(`user "%s" does not exist`, user.name)
+	}
+	result, err := m.system.Get("User", user.ID(), "Email")
+	if err != nil {
+		return "", ErrUnknownUser, Fail(`user "%s" does not exist`, user.name)
+	}
+	if len(result) != 1 {
+		return "", ErrDBFail, Fail(`non unique result for user "%s" email`, user.name)
+	}
+	return result[0].String(), OK, nil
 }

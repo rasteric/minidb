@@ -399,7 +399,7 @@ func convert(parse *pstate) (*Query, error) {
 	}
 }
 
-// Parse a string representing the part after the table name into a Query structure.
+// ParseQuery parses a string representing the part after the table name into a Query structure.
 // Implements the classic Shunting Yard algorithm.
 func ParseQuery(s string) (*Query, error) {
 	state := newPstate(s)

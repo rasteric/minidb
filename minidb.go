@@ -1,9 +1,9 @@
-// Minidb is a minimalist database. It stores items in tables, where each item has a fixed number of fields.
+// Package Minidb is a minimalist database. It stores items in tables, where each item has a fixed number of fields.
 // The package has two APIs. The direct API is centered around MDB structures that represent database connections.
-// Functions of MDB call directly the underlying database layer. The other API is slower and should only be used
-// for cases when commands and results have to be serialized. It uses Command structures that are created by functions
-// like OpenCommand, AddTableCommand, etc. These are passed to Exec() which returns a Result structure that is
-// populated with result values.
+// Functions of MDB call directly the underlying database layer. The second API is slower and may be used
+// for cases when commands and results have to be serialized. It uses Command structures that are created
+// by functions like OpenCommand, AddTableCommand, etc. These are passed to Exec() which returns a Result
+// structure that is populated with result values.
 package minidb
 
 import (
@@ -22,14 +22,14 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// The main database object.
+// MDB is the main database object.
 type MDB struct {
 	base     *sql.DB
 	driver   string
 	location string
 }
 
-// database item. Fields and tables are identified by strings.
+// item is a database item. Fields and tables are identified by strings.
 type Item int64
 
 // FieldType is a field in the database, which might be a list type or a base type.
@@ -63,11 +63,13 @@ func ToBaseType(t FieldType) FieldType {
 	}
 }
 
+// Field represents a database field.
 type Field struct {
 	Name string    `json:"name"`
 	Sort FieldType `json:"sort"`
 }
 
+// Fail returns a new error message formatted with fmt.Sprintf.
 func Fail(msg string, args ...interface{}) error {
 	return errors.New(fmt.Sprintf(msg, args...))
 }
@@ -205,7 +207,7 @@ func getTypeString(field FieldType) string {
 	}
 }
 
-// Return a user-readable string for the type of a field.
+// GetUserTypeString returns a user-readable string for the type of a field.
 func GetUserTypeString(field FieldType) string {
 	switch field {
 	case DBString:
@@ -382,6 +384,7 @@ func (db *MDB) Backup(destination string) error {
 	return err
 }
 
+// Close closes the database, making sure that all remaining transactions are finished.
 func (db *MDB) Close() error {
 	if db.base != nil {
 		err := db.base.Close()
@@ -392,6 +395,16 @@ func (db *MDB) Close() error {
 		db.location = ""
 	}
 	return nil
+}
+
+// Base returns the base sql.DB that minidb uses for its underlying storage.
+func (db *MDB) Base() *sql.DB {
+	return db.base
+}
+
+// Begin starts a transaction, it is a direct wrapper to the underlying sql database Begin function.
+func (db *MDB) Begin() (*sql.Tx, error) {
+	return db.base.Begin()
 }
 
 // TableExists returns true if the table exists, false otherwise.
@@ -547,6 +560,8 @@ func (db *MDB) ParseFieldValues(table string, field string, data []string) ([]Va
 	return result, nil
 }
 
+// ParseTime parses a time string in RFC3339 format and returns the time or an error if
+// the format is wrong.
 func ParseTime(s string) (time.Time, error) {
 	t, err := time.ParseInLocation(time.RFC3339, s, time.Now().Local().Location())
 	if err == nil {
@@ -851,6 +866,9 @@ func (db *MDB) Set(table string, item Item, field string, data []Value) error {
 	if !db.TableExists(table) {
 		return Fail("table '%s' does not exist", table)
 	}
+	if !db.FieldExists(table, field) {
+		return Fail("field '%s' does not exist in table '%s'", field, table)
+	}
 	if !db.ItemExists(table, item) {
 		return Fail("no %s %d", table, item)
 	}
@@ -976,6 +994,7 @@ func (db *MDB) GetTables() []string {
 // Queries
 // -------
 
+// QuerySort is the type of a query. Some of these sorts are only used internally.
 type QuerySort int
 
 // The sorts of query entries.
