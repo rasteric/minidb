@@ -1,7 +1,10 @@
-# minidb
+ # Minidb
 *-- a minimalist database for Golang and a key-value database command line tool*
 
-This is an early version of an SQL database wrapper library and a command line database written in Go. It currently allows you to create tables with "fields", where each field may contain a string, int, blob, or date. It also has types string-list, int-list, blob-list, and date-list. Tables and their fields can then be queried by the command line tool _minidb_. Use the --help command line option for more information about the CLI tool.
+[![GoDoc](https://godoc.org/github.com/rasteric/minidb/go?status.svg)](https://godoc.org/github.com/rasteric/minidb)
+[![Go Report Card](https://goreportcard.com/badge/github.com/rasteric/minidb)](https://goreportcard.com/report/github.com/rasteric/minidb)
+
+Minidb is an early version of an SQL database wrapper library and a command line database written in Go. It currently allows you to create tables with "fields", where each field may contain a string, int, blob, or date. It also has types string-list, int-list, blob-list, and date-list. Tables and their fields can then be queried by the command line tool _minidb_. Use the --help command line option for more information about the CLI tool.
 
 The database uses an existing SQL driver and wraps around it. The command line tool uses Sqlite3 and the library is also only tested with Sqlite. I try to avoid using Sqlite-specific constructs but currently do not guarantee that it will work with other SQL databases.
 
