@@ -1,4 +1,4 @@
-// Package Minidb is a minimalist database. It stores items in tables, where each item has a fixed number of fields.
+// Package minidb is a minimalist database. It stores items in tables, where each item has a fixed number of fields.
 // The package has two APIs. The direct API is centered around MDB structures that represent database connections.
 // Functions of MDB call directly the underlying database layer. The second API is slower and may be used
 // for cases when commands and results have to be serialized. It uses Command structures that are created
@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/mattn/go-sqlite3" // The driver for sqlite3 is pulled in.
 )
 
 // MDB is the main database object.
@@ -29,7 +29,7 @@ type MDB struct {
 	location string
 }
 
-// item is a database item. Fields and tables are identified by strings.
+// Item is a database item. Fields and tables are identified by strings.
 type Item int64
 
 // FieldType is a field in the database, which might be a list type or a base type.
