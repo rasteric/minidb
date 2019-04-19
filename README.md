@@ -3,6 +3,7 @@
 
 [![GoDoc](https://godoc.org/github.com/rasteric/minidb/go?status.svg)](https://godoc.org/github.com/rasteric/minidb)
 [![Go Report Card](https://goreportcard.com/badge/github.com/rasteric/minidb)](https://goreportcard.com/report/github.com/rasteric/minidb)
+[![License](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
 
 Minidb is an early version of an SQL database wrapper library and a command line database written in Go. It currently allows you to create tables with "fields", where each field may contain a string, int, blob, or date. It also has types string-list, int-list, blob-list, and date-list. Tables and their fields can then be queried by the command line tool _minidb_. Use the --help command line option for more information about the CLI tool.
 
