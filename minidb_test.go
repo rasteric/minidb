@@ -190,7 +190,8 @@ func TestMDB(t *testing.T) {
 		t.Errorf("Open() failed: %s", err)
 	}
 	// test code here
-	err = db.AddTable("test", []Field{Field{"Name", DBStringList},
+	err = db.AddTable("test", []Field{
+		Field{"Name", DBStringList},
 		Field{"Email", DBString},
 		Field{"Age", DBInt},
 		Field{"Scores", DBIntList},
@@ -378,6 +379,10 @@ func TestMDB(t *testing.T) {
 		NewString("Smith")})
 	if err == nil {
 		t.Errorf("MDB.Set() returns no error for incorrect data")
+	}
+	err = db.Index("test", "Name")
+	if err != nil {
+		t.Errorf("MDB.Index() failed")
 	}
 	values, err := db.Get("test", item, "Name")
 	if err != nil {

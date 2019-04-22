@@ -640,6 +640,29 @@ FOREIGN KEY(Owner) REFERENCES %s(Id))`, listFieldToTableName(table, field.Name),
 	return nil
 }
 
+// Index creates an index for field in table unless the index exists already.
+// An index increases the search speed of certain string queries on the field, such as "Person name=joh%".
+func (db *MDB) Index(table, field string) error {
+	if !validTable.MatchString(table) {
+		return Fail("invalid table name '%s'", table)
+	}
+	if !db.FieldExists(table, field) {
+		return Fail("field '%s' does not exist in table '%s'", field, table)
+	}
+	var realtable string
+	if db.IsListField(table, field) {
+		realtable = listFieldToTableName(table, field)
+	} else {
+		realtable = table
+	}
+	indexName := field + "_" + realtable + "_IDX"
+	_, err := db.base.Exec(fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s(%s);`, indexName, realtable, field))
+	if err != nil {
+		return Fail("failed to create index for field '%s' in table '%s': %s", field, table, err)
+	}
+	return nil
+}
+
 // NewItem creates a new item in the table and returns its numerical ID.
 func (db *MDB) NewItem(table string) (Item, error) {
 	if !validTable.MatchString(table) {

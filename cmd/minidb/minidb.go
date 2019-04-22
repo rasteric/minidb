@@ -45,6 +45,7 @@ const (
 	ErrNoConnection
 	ErrIO
 	ErrRemoveFailed
+	ErrIndexFailed
 )
 
 func sendCommand(sock mangos.Socket, cmd *minidb.Command) (*minidb.Result, error) {
@@ -194,6 +195,10 @@ func main() {
 	deleteBlobKey := deleteBlob.Arg("key", "The numeric key.").Required().Int64()
 	deleteDate := app.Command("delete-date", "Delete a date value from the key-value store.")
 	deleteDateKey := deleteDate.Arg("key", "The numeric key.").Required().Int64()
+
+	index := app.Command("index", "Index a field in a table for faster string queries. If the index already exists, nothing is changed")
+	indexTable := index.Arg("table", "The table in which a field is to be indexed.").Required().String()
+	indexField := index.Arg("field", "The field of the table to index.").Required().String()
 
 	command := kingpin.MustParse(app.Parse(os.Args[1:]))
 
@@ -510,26 +515,31 @@ func main() {
 	case listInt.FullCommand():
 		result, err := sendCommand(sock, minidb.ListIntCommand(theDB))
 		if err != nil {
-			die(ErrIO, "transport failed: %s\n", err)
+			die(ErrIO, "failed to list ints: %s\n", err)
 		}
 		printItems(toItems(result.Ints))
 	case listStr.FullCommand():
 		result, err := sendCommand(sock, minidb.ListStrCommand(theDB))
 		if err != nil {
-			die(ErrIO, "transport failed: %s\n", err)
+			die(ErrIO, "failed to list strings: %s\n", err)
 		}
 		printItems(toItems(result.Ints))
 	case listBlob.FullCommand():
 		result, err := sendCommand(sock, minidb.ListBlobCommand(theDB))
 		if err != nil {
-			die(ErrIO, "transport failed: %s\n", err)
+			die(ErrIO, "failed to list blobs: %s\n", err)
 		}
 		printItems(toItems(result.Ints))
 	case listDate.FullCommand():
 		result, err := sendCommand(sock, minidb.ListDateCommand(theDB))
 		if err != nil {
-			die(ErrIO, "transport failed: %s\n", err)
+			die(ErrIO, "failed to list dates: %s\n", err)
 		}
 		printItems(toItems(result.Ints))
+	case index.FullCommand():
+		_, err := sendCommand(sock, minidb.IndexCommand(theDB, *indexTable, *indexField))
+		if err != nil {
+			die(ErrIndexFailed, "failed to create index: %s\n", err)
+		}
 	}
 }

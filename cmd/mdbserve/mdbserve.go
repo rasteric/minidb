@@ -40,7 +40,7 @@ type errmsg struct {
 }
 
 // ServerLoop starts the main server loop, listening for incoming client connections.
-func serverLoop(url string, ctx context.Context, ch chan errmsg, timeout time.Duration) {
+func serverLoop(ctx context.Context, url string, ch chan errmsg, timeout time.Duration) {
 	var sock mangos.Socket
 	var err error
 	var msg []byte
@@ -124,7 +124,7 @@ func main() {
 	var ch = make(chan errmsg, 1)
 	var msg errmsg
 
-	go serverLoop(theURL, ctx, ch, time.Duration(tmax)*time.Second)
+	go serverLoop(ctx, theURL, ch, time.Duration(tmax)*time.Second)
 	defer cancel()
 
 	done := false
