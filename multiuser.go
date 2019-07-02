@@ -86,7 +86,23 @@ func NewMultiDB(basedir string, driver string) (*MultiDB, error) {
 	thedb.system = sys
 	thedb.driver = driver
 	thedb.userdbs = make(map[Item]*MDB)
+	err = sys.AddTable("User",
+		[]Field{Field{Name: "Username", Sort: DBString},
+			Field{Name: "Email", Sort: DBString},
+			Field{Name: "Key", Sort: DBBlob},
+			Field{Name: "ExternalSalt", Sort: DBBlob},
+			Field{Name: "InternalSalt", Sort: DBBlob},
+			Field{Name: "Created", Sort: DBDate},
+			Field{Name: "Modified", Sort: DBDate}})
+	if err != nil {
+		return nil, Fail(`could not create user table: %s`, err)
+	}
 	return thedb, nil
+}
+
+// Begin a transaction.
+func (m *MultiDB) Begin() (*Tx, error) {
+	return m.system.Begin()
 }
 
 // UserDir returns the given user's directory where the user database is stored.
@@ -169,12 +185,13 @@ const (
 	ErrInvalidUser                             // The user name or email is invalid.
 	ErrDBClosed                                // The internal housekeeping DB is locked, corrupted, or closed.
 	ErrDBFail                                  // A database operation has failed.
-	ErrFileSystem                              // A directory of file could not be created.
+	ErrFileSystem                              // A directory or file could not be created.
 	ErrNoHome                                  // The user's DB home directory does not exist.
 	ErrCloseFailed                             // Could not close the user database.
 	ErrOpenFailed                              // Could not open the user database.
 	ErrPackFail                                // Compressing user data failed.
 	ErrInvalidKey                              // A given salted key is invalid (either nil, or other problems).
+	ErrTransactionFail                         // Could not perform op because of a failed transaction.
 )
 
 func (m *MultiDB) isExisting(field, query string) bool {
@@ -200,12 +217,14 @@ func (m *MultiDB) userID(username string) Item {
 
 // ExistingUser returns true if a user with the given user name exists, false otherwise.
 func (m *MultiDB) ExistingUser(username string) bool {
-	return m.isExisting("Username", username)
+	result := m.isExisting("Username", username)
+	return result
 }
 
 // ExistingEmail returns true if a user with this email address exists, false otherwise.
 func (m *MultiDB) ExistingEmail(email string) bool {
-	return m.isExisting("Email", email)
+	result := m.isExisting("Email", email)
+	return result
 }
 
 // NewUser creates a new user with given username, email, and password. Based on a strong
@@ -228,19 +247,7 @@ func (m *MultiDB) NewUser(username, email string, key *saltedKey) (*User, ErrCod
 	if m.system == nil {
 		return nil, ErrDBClosed, Fail(`internal DB is nil`)
 	}
-	// maybe create the user table
-	if !m.system.TableExists("User") {
-		err := m.system.AddTable("User", []Field{Field{Name: "Username", Sort: DBString},
-			Field{Name: "Email", Sort: DBString},
-			Field{Name: "Key", Sort: DBBlob},
-			Field{Name: "ExternalSalt", Sort: DBBlob},
-			Field{Name: "InternalSalt", Sort: DBBlob},
-			Field{Name: "Created", Sort: DBDate},
-			Field{Name: "Modified", Sort: DBDate}})
-		if err != nil {
-			return nil, ErrDBFail, err
-		}
-	}
+
 	// check if user and email exist
 	if m.ExistingUser(username) {
 		return nil, ErrUsernameInUse, Fail(`user "%s" already exists!`, username)
@@ -248,20 +255,19 @@ func (m *MultiDB) NewUser(username, email string, key *saltedKey) (*User, ErrCod
 	if m.ExistingEmail(email) {
 		return nil, ErrEmailInUse, Fail(`email "%s" is already in use!`, email)
 	}
-	// now start adding the user in a transaction
-	tx, err := m.system.base.Begin()
-	if err != nil {
-		return nil, ErrDBFail, err
-	}
-	defer tx.Rollback()
+	// now start adding the user
 	user.id, err = m.system.NewItem("User")
 	if err != nil {
 		return nil, ErrDBFail, err
 	}
-	if err := m.system.Set("User", user.id, "Username", []Value{NewString(username)}); err != nil {
+	tx, err := m.Begin()
+	if err != nil {
+		return nil, ErrTransactionFail, err
+	}
+	if err := tx.Set("User", user.id, "Username", []Value{NewString(username)}); err != nil {
 		return nil, ErrDBFail, err
 	}
-	if err := m.system.Set("User", user.id, "Email", []Value{NewString(email)}); err != nil {
+	if err := tx.Set("User", user.id, "Email", []Value{NewString(email)}); err != nil {
 		return nil, ErrDBFail, err
 	}
 	salt := make([]byte, key.p.InternalSaltLength)
@@ -269,32 +275,32 @@ func (m *MultiDB) NewUser(username, email string, key *saltedKey) (*User, ErrCod
 	if uint32(n) != key.p.InternalSaltLength || err != nil {
 		return nil, ErrCryptoRandFailure, Fail(`random number generator failed to generate salt`)
 	}
-	if err := m.system.Set("User", user.id, "InternalSalt", []Value{NewBytes(salt)}); err != nil {
+	if err := tx.Set("User", user.id, "InternalSalt", []Value{NewBytes(salt)}); err != nil {
 		return nil, ErrDBFail, Fail(`could not store salt in multiuser database: %s`, err)
 	}
 	realkey := argon2.IDKey(key.pwd,
 		salt, key.p.Argon2Iterations, key.p.Argon2Memory,
 		key.p.Argon2Parallelism, key.p.KeyLength)
-	if err := m.system.Set("User", user.id, "Key", []Value{NewBytes(realkey)}); err != nil {
+	if err := tx.Set("User", user.id, "Key", []Value{NewBytes(realkey)}); err != nil {
 		return nil, ErrDBFail, Fail(`could not store key in multiuser database: %s`, err)
 	}
-	if err := m.system.Set("User", user.id, "ExternalSalt", []Value{NewBytes(key.sel)}); err != nil {
+	if err := tx.Set("User", user.id, "ExternalSalt", []Value{NewBytes(key.sel)}); err != nil {
 		return nil, ErrDBFail, Fail(`could not store the external salt in multiuser database: %s`, err)
 	}
 	now := NewDate(time.Now())
-	if err := m.system.Set("User", user.id, "Created", []Value{now}); err != nil {
+	if err := tx.Set("User", user.id, "Created", []Value{now}); err != nil {
 		return nil, ErrDBFail, err
 	}
-	if err := m.system.Set("User", user.id, "Modified", []Value{now}); err != nil {
+	if err := tx.Set("User", user.id, "Modified", []Value{now}); err != nil {
 		return nil, ErrDBFail, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, ErrDBFail, Fail(`multiuser database error: %s`, err)
 	}
 	dirpath := m.UserDir(&user)
 	err = CreateDirIfNotExist(dirpath)
 	if err != nil {
 		return nil, ErrFileSystem, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, ErrDBFail, Fail(`multiuser database error: %s`, err)
 	}
 	return &user, OK, nil
 }
@@ -306,6 +312,11 @@ func (m *MultiDB) ExternalSalt(username string) ([]byte, ErrCode, error) {
 	if !m.ExistingUser(username) {
 		return nil, ErrUnknownUser, Fail(`unknown user "%s"`, username)
 	}
+	tx, err := m.Begin()
+	if err != nil {
+		return nil, ErrTransactionFail, Fail(`transaction failed: %s`, err)
+	}
+	defer tx.Rollback()
 	id := m.userID(username)
 	if id == 0 {
 		return nil, ErrUnknownUser, Fail(`unknown user "%s"`, username)
@@ -313,6 +324,10 @@ func (m *MultiDB) ExternalSalt(username string) ([]byte, ErrCode, error) {
 	result, err := m.system.Get("User", id, "ExternalSalt")
 	if err != nil || len(result) != 1 {
 		return nil, ErrNotEnoughSalt, Fail(`user "%s" salt not found, the user database might be corrupted`, username)
+	}
+	err = tx.Commit()
+	if err != nil {
+		return nil, ErrTransactionFail, Fail(`transaction commit failed: %s`, err)
 	}
 	return result[0].Bytes(), OK, nil
 }
@@ -378,6 +393,7 @@ func (m *MultiDB) Authenticate(username string, key *saltedKey) (*User, ErrCode,
 	if !m.ExistingUser(username) {
 		return nil, ErrUnknownUser, Fail(`user "%s" does not exist`, username)
 	}
+
 	reply, err := key.validate()
 	if err != nil || reply != OK {
 		return nil, reply, err
@@ -472,13 +488,22 @@ func (m *MultiDB) DeleteUserContent(user *User) (ErrCode, error) {
 
 // DeleteUser deletes a user and all associated user content from a multiuser database.
 func (m *MultiDB) DeleteUser(user *User) (ErrCode, error) {
-	if err := m.system.RemoveItem("User", user.ID()); err != nil {
+	tx, err := m.Begin()
+	if err != nil {
+		return ErrTransactionFail, err
+	}
+	defer tx.Rollback()
+	if err := tx.RemoveItem("User", user.ID()); err != nil {
 		return ErrDBFail, err
 	}
 	errcode, err := m.DeleteUserContent(user)
 	delete(m.userdbs, user.ID())
 	if err != nil {
 		return errcode, err
+	}
+	err = tx.Commit()
+	if err != nil {
+		return ErrTransactionFail, err
 	}
 	return OK, nil
 }

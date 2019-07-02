@@ -57,57 +57,35 @@ func (db *MDB) GetDateStr(key int64) string {
 }
 
 // SetInt stores an int64 value by key.
-func (db *MDB) SetInt(key int64, value int64) {
-	tx, err := db.base.Begin()
-	if err != nil {
-		return
-	}
-	_, err = db.base.Exec("DELETE FROM _KVINT WHERE Id=?", key)
-	if err != nil {
-		tx.Rollback()
-		return
-	}
-	_, err = db.base.Exec("INSERT INTO _KVINT (Id, Value) VALUES (?, ?)", key, value)
-	if err != nil {
-		tx.Rollback()
-	}
-	tx.Commit()
+func (tx *Tx) SetInt(key int64, value int64) {
+	tx.tx.Exec("DELETE FROM _KVINT WHERE Id=?", key)
+	tx.tx.Exec("INSERT INTO _KVINT (Id, Value) VALUES (?, ?)", key, value)
 }
 
-func (db *MDB) setStrValue(store string, key int64, value string) {
-	tx, err := db.base.Begin()
-	if err != nil {
-		return
-	}
-
-	db.base.Exec("DELETE FROM "+store+" WHERE Id=?", key)
-	_, err = db.base.Exec("INSERT INTO "+store+" (Id, Value) VALUES (?, ?)", key, value)
-	if err != nil {
-		tx.Rollback()
-		return
-	}
-	tx.Commit()
+func (tx *Tx) setStrValue(store string, key int64, value string) {
+	tx.tx.Exec("DELETE FROM "+store+" WHERE Id=?", key)
+	tx.tx.Exec("INSERT INTO "+store+" (Id, Value) VALUES (?, ?)", key, value)
 }
 
 // SetStr stores a string value by key.
-func (db *MDB) SetStr(key int64, value string) {
-	db.setStrValue("_KVSTR", key, value)
+func (tx *Tx) SetStr(key int64, value string) {
+	tx.setStrValue("_KVSTR", key, value)
 }
 
 // SetBlob stores a byte array by key.
-func (db *MDB) SetBlob(key int64, value []byte) {
-	db.setStrValue("_KVBLOB", key, string(value))
+func (tx *Tx) SetBlob(key int64, value []byte) {
+	tx.setStrValue("_KVBLOB", key, string(value))
 }
 
 // SetDate stores a time.Time value by key.
-func (db *MDB) SetDate(key int64, value time.Time) {
-	db.setStrValue("_KVDATE", key, value.UTC().Format(time.RFC3339))
+func (tx *Tx) SetDate(key int64, value time.Time) {
+	tx.setStrValue("_KVDATE", key, value.UTC().Format(time.RFC3339))
 }
 
 // SetDateStr stores a datetime in RFC3339 format by key. The correctness of the string is not validated.
 // Use this function in combination with GetDateStr to prevent unnecessary conversions.
-func (db *MDB) SetDateStr(key int64, value string) {
-	db.setStrValue("_KVDATE", key, value)
+func (tx *Tx) SetDateStr(key int64, value string) {
+	tx.setStrValue("_KVDATE", key, value)
 }
 
 func (db *MDB) hasKey(key int64, store string) bool {
@@ -139,28 +117,28 @@ func (db *MDB) HasDate(key int64) bool {
 	return db.hasKey(key, "_KVDATE")
 }
 
-func (db *MDB) deleteKV(key int64, store string) {
-	db.base.Exec(`DELETE FROM `+store+` WHERE Id=?;`, key)
+func (tx *Tx) deleteKV(key int64, store string) {
+	tx.tx.Exec(`DELETE FROM `+store+` WHERE Id=?;`, key)
 }
 
 // DeleteInt deletes the key and int value for given key. It has no effect if the key-value pair doesn't exist.
-func (db *MDB) DeleteInt(key int64) {
-	db.deleteKV(key, "_KVINT")
+func (tx *Tx) DeleteInt(key int64) {
+	tx.deleteKV(key, "_KVINT")
 }
 
 // DeleteStr deletes the key and string value for given key. It has no effect if the key-value pair doesn't exist.
-func (db *MDB) DeleteStr(key int64) {
-	db.deleteKV(key, "_KVSTR")
+func (tx *Tx) DeleteStr(key int64) {
+	tx.deleteKV(key, "_KVSTR")
 }
 
 // DeleteBlob deletes the key and string for given key. It has no effect if the key-value pair doesn't exist.
-func (db *MDB) DeleteBlob(key int64) {
-	db.deleteKV(key, "_KVBLOB")
+func (tx *Tx) DeleteBlob(key int64) {
+	tx.deleteKV(key, "_KVBLOB")
 }
 
 // DeleteDate deletes the key and date value for given key. It has no effect if the key-value pair doesn't exist.
-func (db *MDB) DeleteDate(key int64) {
-	db.deleteKV(key, "_KVDATE")
+func (tx *Tx) DeleteDate(key int64) {
+	tx.deleteKV(key, "_KVDATE")
 }
 
 func (db *MDB) listKV(store string) []int64 {

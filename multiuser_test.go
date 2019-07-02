@@ -19,9 +19,9 @@ func TestMultiDB(t *testing.T) {
 	p := DefaultParams()
 	salt := GenerateExternalSalt(p)
 	key := GenerateKey("a test password", salt, p)
-	user1, _, err := db.NewUser("John", "john@test.com", key)
+	user1, code, err := db.NewUser("John", "john@test.com", key)
 	if err != nil {
-		t.Errorf(`could not create new user "John", %s`, err)
+		t.Errorf(`could not create new user "John", %s [errcode=%d]`, err, code)
 	}
 	salt2 := GenerateExternalSalt(p)
 	key2 := GenerateKey("another password", salt2, p)
@@ -66,13 +66,32 @@ func TestMultiDB(t *testing.T) {
 	if err != nil {
 		t.Errorf(`MultiDB.UserDB() failed with errcode=%d: %s`, reply, err)
 	}
-	user1db.SetStr(1, "test")
+	tx, err := user1db.Begin()
+	if err != nil {
+		t.Errorf(`MultiDB user db transaction failed: %s`, err)
+	}
+	tx.SetStr(1, "test")
+	err = tx.Commit()
+	if err != nil {
+		t.Errorf(`MultiDB user db commit failed: %s`, err)
+	}
 	if s := user1db.GetStr(1); s != "test" {
 		t.Errorf(`simple get/set failed: %s`, err)
 	}
-	user2db.SetStr(1, "hello world")
+	tx, err = user2db.Begin()
+	if err != nil {
+		t.Errorf(`MultiDB user db transaction failed: %s`, err)
+	}
+	tx.SetStr(1, "hello world")
+	err = tx.Commit()
+	if err != nil {
+		t.Errorf(`MultiDB user db commit failed: %s`, err)
+	}
 	if s := user2db.GetStr(1); s != "hello world" {
 		t.Errorf(`simple get/set failed: %s`, err)
+	}
+	if err != nil {
+		t.Errorf(`MultiDB user db commit failed: %s`, err)
 	}
 	if s, reply, err := db.UserEmail(user1); s != "john@test.com" {
 		t.Errorf(`test user email not stored correctly, errcode=%d, expected "john@test.com", given "%s": %s`, reply, s, err)

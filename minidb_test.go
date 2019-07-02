@@ -185,6 +185,7 @@ func TestParseFieldDesc(t *testing.T) {
 }
 
 func TestMDB(t *testing.T) {
+	var tx *Tx
 	db, err := Open("sqlite3", tmpfile.Name())
 	if err != nil {
 		t.Errorf("Open() failed: %s", err)
@@ -201,27 +202,81 @@ func TestMDB(t *testing.T) {
 		Field{"Schedules", DBDateList},
 	})
 	if err != nil {
-		t.Errorf("MDB.AddTable() failed: %s", err)
+		t.Errorf("AddTable() failed: %s", err)
 	}
+
 	if !db.TableExists("test") {
-		t.Errorf("MDB.AddTable() failed or MDB.TableExists() failed, should be true, given false")
+		t.Errorf("tx.TableExists() failed, should be true, given false")
 	}
 	if db.TableExists("humpty") {
-		t.Errorf("MDB.TableExists() returned true instead of false for nonexistent table")
+		t.Errorf("tx.TableExists() returned true instead of false for nonexistent table")
 	}
 	if db.ItemExists("test", 1) {
-		t.Errorf("MDB.ItemExists() returned true instead of false for table 'test'")
+		t.Errorf("tx.ItemExists() returned true instead of false for table 'test'")
 	}
+
 	item, err := db.NewItem("test")
 	if err != nil {
-		t.Errorf("MDB.NewItem() failed for table 'test'")
+		t.Errorf("db.NewItem() failed for table 'test'")
 	}
+
 	if !db.ItemExists("test", item) {
-		t.Errorf("MDB.ItemExists() returned false for existing item %d, expected true", item)
+		t.Errorf("ItemExists() returned false for existing item %d, expected true", item)
+	}
+
+	item2, err := db.UseItem("test", 299)
+	if err != nil {
+		t.Errorf("db.UseItem() failed for new item 299")
+	}
+	tx, err = db.Begin()
+	if err != nil {
+		t.Errorf("db.Begin() failed: %v", err)
+	}
+	err = tx.Set("test", item2, "Name", []Value{NewString("Johannes Hacker")})
+	if err != nil {
+		t.Errorf("db.Set() on item 299 failed")
+	}
+	if err := tx.Commit(); err != nil {
+		t.Errorf("db.Commit() failed: %v", err)
+	}
+	it1, err := db.Get("test", 299, "Name")
+	if err != nil {
+		t.Errorf("db.Get() failed for used item 299: %v", err)
+	}
+	if len(it1) != 1 {
+		t.Errorf("db.Get() returned the wrong number of results for 299 Name")
+	}
+	if it1[0].String() != "Johannes Hacker" {
+		t.Errorf("db.Get() returned wrong 299 Name, got '%s' expected 'Johannes Hacker'", it1[0].String())
+	}
+	item3, err := db.UseItem("test", 299)
+	if err != nil {
+		t.Errorf("db.UseItem() failed for existing item 299!")
+	}
+	it2, err := db.Get("test", item3, "Name")
+	if err != nil {
+		t.Errorf("db.Get() failed for used item 299: %v", err)
+	}
+	if len(it2) != 1 {
+		t.Errorf("db.Get() returned the wrong number of results for 299 Name")
+	}
+	if it2[0].String() != "Johannes Hacker" {
+		t.Errorf("db.Get() returned wrong 299 Name, got '%s' expected 'Johannes Hacker'", it2[0].String())
+	}
+	tx, err = db.Begin()
+	if err != nil {
+		t.Errorf("db.Begin() failed: %v", err)
+	}
+	if err := tx.RemoveItem("test", 299); err != nil {
+		t.Errorf("tx.RemoveItem() failed: %v", err)
+	}
+	err = tx.Commit()
+	if err != nil {
+		t.Errorf("db.Commit() failed: %v", err)
 	}
 	for _, field := range []string{"Name", "Email", "Age", "Scores", "Modified", "Misc", "Data", "Schedules"} {
 		if !db.FieldExists("test", field) {
-			t.Errorf("MDB.FieldExists(%s) is false, but should be true", field)
+			t.Errorf("FieldExists(%s) is false, but should be true", field)
 		}
 		var c FieldType
 		k := db.MustGetFieldType("test", field)
@@ -244,275 +299,356 @@ func TestMDB(t *testing.T) {
 			c = DBDateList
 		}
 		if k != c {
-			t.Errorf("MDB.MustGetFieldType() unexpected value, expected %d, given %d", c, k)
+			t.Errorf("MustGetFieldType() unexpected value, expected %d, given %d", c, k)
 		}
 		if !db.FieldIsNull("test", item, field) {
-			t.Errorf("MDB.FieldIsNull() returned true instead of false for NULL field '%s'", field)
+			t.Errorf("FieldIsNull() returned true instead of false for NULL field '%s'", field)
 		}
 		if !db.FieldIsEmpty("test", item, field) {
-			t.Errorf("MDB.FieldIsEmpty() returned true instead of false for NULL field '%s'", field)
+			t.Errorf("FieldIsEmpty() returned true instead of false for NULL field '%s'", field)
 		}
 	}
 	if db.ItemExists("test", 99) {
-		t.Errorf("MDB.ItemExists() returns true for fictitious item 99 (did the driver just assign this as first id?)")
+		t.Errorf("ItemExists() returns true for fictitious item 99 (did the driver just assign this as first id?)")
 	}
 	if db.FieldExists("test", "blurbfoo") {
-		t.Errorf("MDB.FieldExists() returns true but should return false for nonexistent field")
+		t.Errorf("FieldExists() returns true but should return false for nonexistent field")
 	}
 	if db.FieldExists("schmoo", "Name") {
-		t.Errorf("MDB.FieldExists() returns true but should return false for fictitious field in nonexistent table")
+		t.Errorf("FieldExists() returns true but should return false for fictitious field in nonexistent table")
 	}
 	if db.IsListField("test", "Email") {
-		t.Errorf("MDB.IsListField() returns true for non-list field")
+		t.Errorf("IsListField() returns true for non-list field")
 	}
 	if !db.IsListField("test", "Name") {
-		t.Errorf("MDB.IsListField() returns false for list field, should be true")
+		t.Errorf("IsListField() returns false for list field, should be true")
 	}
 	if db.IsListField("test", "schmoo") {
-		t.Errorf("MDB.IsListField() returns true for nonexistent field, should be false")
+		t.Errorf("IsListField() returns true for nonexistent field, should be false")
 	}
 	if db.IsListField("schmmoo", "what") {
-		t.Errorf("MDB.IsListField() returns true for nonexistent field in nonexistent table, should be false")
+		t.Errorf("IsListField() returns true for nonexistent field in nonexistent table, should be false")
 	}
 	if !db.IsEmptyListField("test", 1, "Name") {
-		t.Errorf("MDB.IsEmptyListField() returns false for empty list field")
+		t.Errorf("IsEmptyListField() returns false for empty list field")
 	}
 	if db.IsEmptyListField("test", 1, "Email") {
-		t.Errorf("MDB.IsEmptyListField() returns true for non list field")
+		t.Errorf("IsEmptyListField() returns true for non list field")
 	}
 	if !db.FieldExists("test", "Email") {
-		t.Errorf("MDB.FieldExists() returns false for an existing field")
+		t.Errorf("FieldExists() returns false for an existing field")
 	}
 	if !db.FieldExists("test", "Name") {
-		t.Errorf("MDB.FieldExists() returns false for an existing list field")
+		t.Errorf("FieldExists() returns false for an existing list field")
 	}
 	if db.FieldExists("test", "schmoo") {
-		t.Errorf("MDB.FieldExists() returns true for a nonexistent field")
+		t.Errorf("FieldExists() returns true for a nonexistent field")
 	}
 	if db.FieldExists("schmoo", "Name") {
-		t.Errorf("MDB.FieldExists() returns true for a field in a nonexistent table")
+		t.Errorf("FieldExists() returns true for a field in a nonexistent table")
 	}
 	_, err = db.ParseFieldValues("schmoo", "test", []string{})
 	if err == nil {
-		t.Errorf("MDB.ParseFieldValues() returns no error for nonexistent table")
+		t.Errorf("ParseFieldValues() returns no error for nonexistent table")
 	}
 	_, err = db.ParseFieldValues("test", "Name", []string{"John", "Theodore", "Smith"})
 	if err != nil {
-		t.Errorf("MDB.ParseFieldValues() returns error for correct input")
+		t.Errorf("ParseFieldValues() returns error for correct input")
 	}
 	_, err = db.ParseFieldValues("test", "Name", []string{""})
 	if err != nil {
-		t.Errorf("MDB.ParseFieldValues() returns error for correct input")
+		t.Errorf("ParseFieldValues() returns error for correct input")
 	}
 	_, err = db.ParseFieldValues("test", "Name", []string{})
 	if err == nil {
-		t.Errorf("MDB.ParseFieldValues() returns no error for empty input, should indicate an error")
+		t.Errorf("ParseFieldValues() returns no error for empty input, should indicate an error")
 	}
 	_, err = db.ParseFieldValues("test", "Age", []string{"-1234"})
 	if err != nil {
-		t.Errorf("MDB.ParseFieldValues() returns error for correct numeric input")
+		t.Errorf("ParseFieldValues() returns error for correct numeric input")
 	}
 	_, err = db.ParseFieldValues("test", "Email", []string{"john", "hello"})
 	if err == nil {
-		t.Errorf("MDB.ParseFieldValues() returns no error for too long input, should indicate an error")
+		t.Errorf("ParseFieldValues() returns no error for too long input, should indicate an error")
 	}
 	_, err = db.ParseFieldValues("test", "Age", []string{"0dude"})
 	if err == nil {
-		t.Errorf("MDB.ParseFieldValues() returns no error for incorrect numeric input, should indicate an error")
+		t.Errorf("ParseFieldValues() returns no error for incorrect numeric input, should indicate an error")
 	}
 	_, err = db.ParseFieldValues("test", "Scores", []string{"27", "23.3", "7"})
 	if err == nil {
-		t.Errorf("MDB.ParseFieldValues() returns no error for incorrect numeric input")
+		t.Errorf("ParseFieldValues() returns no error for incorrect numeric input")
 	}
 	_, err = db.ParseFieldValues("test", "Scores", []string{"27", "23", "7"})
 	if err != nil {
-		t.Errorf("MDB.ParseFieldValues() returns an error for correct numeric input")
+		t.Errorf("ParseFieldValues() returns an error for correct numeric input")
 	}
 	_, err = db.ParseFieldValues("test", "Misc", []string{"SGVsbG8gd29ybGQh"})
 	if err != nil {
-		t.Errorf("MDB.ParseFieldValues() returns an error for correct blob input")
+		t.Errorf("ParseFieldValues() returns an error for correct blob input")
 	}
 	_, err = db.ParseFieldValues("test", "Misc", []string{"SGVXsbG8gd29ybGQh"})
 	if err == nil {
-		t.Errorf("MDB.ParseFieldValues() returns no error for incorrect blob input")
+		t.Errorf("ParseFieldValues() returns no error for incorrect blob input")
 	}
 	_, err = db.ParseFieldValues("test", "Modified", []string{"1999-12-31T01:00:00Z"})
 	if err != nil {
-		t.Errorf("MDB.ParseFieldValues() returns error for correct date input")
+		t.Errorf("ParseFieldValues() returns error for correct date input")
 	}
 	_, err = db.ParseFieldValues("test", "Modified", []string{"1999-12-31T01:00:00+05:00"})
 	if err != nil {
-		t.Errorf("MDB.ParseFieldValues() returns error for correct date input")
+		t.Errorf("ParseFieldValues() returns error for correct date input")
 	}
 	_, err = db.ParseFieldValues("test", "Modified", []string{"1999-12-31T01:00:00"})
 	if err == nil {
-		t.Errorf("MDB.ParseFieldValues() returns no error for incorrect date input")
+		t.Errorf("ParseFieldValues() returns no error for incorrect date input")
 	}
 	_, err = db.ParseFieldValues("test", "Modified", []string{"1999-12-31T01:00:00+"})
 	if err == nil {
-		t.Errorf("MDB.ParseFieldValues() returns no error for incorrect date input")
+		t.Errorf("ParseFieldValues() returns no error for incorrect date input")
 	}
 	_, err = db.ParseFieldValues("test", "Modified", []string{"1999-12-31 01:00:00Z"})
 	if err == nil {
-		t.Errorf("MDB.ParseFieldValues() returns no error for incorrect date input")
+		t.Errorf("ParseFieldValues() returns no error for incorrect date input")
 	}
 	if count, _ := db.Count("test"); count > 1 {
-		t.Errorf("MDB.Count() > 0 for empty table")
+		t.Errorf("Count() > 0 for empty table")
 	}
 	if count, _ := db.Count("schmoo"); count != 0 {
-		t.Errorf("MDB.Count() > 0 for nonextistent table")
+		t.Errorf("Count() > 0 for nonextistent table")
 	}
 	items, _ := db.ListItems("test", 1024)
 	if items[0] != item {
-		t.Errorf("MDB.ListItems(), expected %d, given %d", item, items[0])
+		t.Errorf("ListItems(), expected %d, given %d", item, items[0])
 	}
 	items, _ = db.ListItems("schmoo", 1024)
 	if err == nil {
-		t.Errorf("MDB.ListItems() should return error for nonextistent table, given no error")
+		t.Errorf("ListItems() should return error for nonextistent table, given no error")
 	}
-	err = db.Set("test", item, "Name", []Value{NewString("John"), NewString("Theodore"),
+
+	tx, err = db.Begin()
+	if err != nil {
+		t.Errorf("Begin() transaction failed: %s", err)
+	}
+	defer tx.Rollback()
+	err = tx.Set("test", item, "Name", []Value{NewString("John"), NewString("Theodore"),
 		NewString("Smith")})
 	if err != nil {
-		t.Errorf("MDB.Set() returns error for correct data")
+		t.Errorf("Set() returns error for correct data type: %s", err)
 	}
-	err = db.Set("test", item, "Name", []Value{NewString("John"), NewInt(333),
+	err = tx.Set("test", item, "Name", []Value{NewString("John"), NewInt(333),
 		NewString("Smith")})
 	if err == nil {
-		t.Errorf("MDB.Set() returns no error for incorrect data")
+		t.Errorf("Set() returns no error for incorrect data type")
 	}
-	err = db.Index("test", "Name")
+	err = tx.Index("test", "Name")
 	if err != nil {
-		t.Errorf("MDB.Index() failed")
+		t.Errorf("Index() failed")
 	}
+	err = tx.Commit()
+	if err != nil {
+		t.Errorf("Commit() failed: %s", err)
+	}
+
 	values, err := db.Get("test", item, "Name")
 	if err != nil {
-		t.Errorf("MDB.Get() returns error for valid request: %s", err)
+		t.Errorf("Get() returns error for valid request: %s", err)
 	}
 	if len(values) != 3 {
-		t.Errorf("MDB.Get() returns wrong slice length for string list of length 3: %d", len(values))
+		t.Errorf("Get() returns wrong slice length for string list of length 3: %d", len(values))
 	}
 	if values[0].String() != "John" || values[1].String() != "Theodore" || values[2].String() != "Smith" {
-		t.Errorf("MDB.Get() returns garbage instead of previously set string list data")
+		t.Errorf("Get() returns garbage instead of previously set string list data")
 	}
+
 	// setting and getting different types of data
-	err = db.Set("test", item, "Age", []Value{NewInt(30)})
+	tx, err = db.Begin()
 	if err != nil {
-		t.Errorf("MDB.Set() failed: %s", err)
+		t.Errorf("Begin() transaction failed: %s", err)
 	}
+	err = tx.Set("test", item, "Age", []Value{NewInt(30)})
+	if err != nil {
+		t.Errorf("Set() failed: %s", err)
+	}
+	err = tx.Commit()
+	if err != nil {
+		t.Errorf("Commit() failed: %s", err)
+	}
+
 	values, err = db.Get("test", item, "Age")
 	if err != nil {
-		t.Errorf("MDB.Get() failed: %s", err)
+		t.Errorf("Get() failed: %s", err)
 	}
 	if len(values) != 1 {
 		t.Errorf("MDG.Get() for single datum returned []Value of length %d", len(values))
 	}
 	if values[0].Int() != 30 {
-		t.Errorf("MDB.Get() failed, given %d, expected %d", values[0].Int(), 30)
+		t.Errorf("Get() failed, given %d, expected %d", values[0].Int(), 30)
 	}
-	err = db.Set("test", item, "Email", []Value{NewString("Hello world")})
+
+	tx, err = db.Begin()
 	if err != nil {
-		t.Errorf("MDB.Set() failed: %s", err)
+		t.Errorf("Begin() transaction failed: %s", err)
 	}
+	err = tx.Set("test", item, "Email", []Value{NewString("Hello world")})
+	if err != nil {
+		t.Errorf("Set() failed: %s", err)
+	}
+	err = tx.Commit()
+	if err != nil {
+		t.Errorf("Commit() failed: %s", err)
+	}
+
 	values, err = db.Get("test", item, "Email")
 	if len(values) == 0 || values[0].String() != "Hello world" {
-		t.Errorf("MDB.Get() failed: %s", err)
+		t.Errorf("Get() failed: %s", err)
 	}
-	err = db.Set("test", item, "Scores", []Value{NewInt(10), NewInt(20), NewInt(30)})
+
+	tx, err = db.Begin()
 	if err != nil {
-		t.Errorf("MDB.Set() failed: %s", err)
+		t.Errorf("Begin() transaction failed: %s", err)
 	}
+	err = tx.Set("test", item, "Scores", []Value{NewInt(10), NewInt(20), NewInt(30)})
+	if err != nil {
+		t.Errorf("Set() failed: %s", err)
+	}
+	err = tx.Commit()
+	if err != nil {
+		t.Errorf("Commit() failed: %s", err)
+	}
+
 	values, err = db.Get("test", item, "Scores")
 	if err != nil {
-		t.Errorf("MDB.Get() failed: %s", err)
+		t.Errorf("Get() failed: %s", err)
 	}
 	if len(values) != 3 {
-		t.Errorf("MDB.Get() failed, expected int list of length 3, given length %d", len(values))
+		t.Errorf("Get() failed, expected int list of length 3, given length %d", len(values))
 	}
 	if values[0].Int() != 10 || values[1].Int() != 20 || values[2].Int() != 30 {
-		t.Errorf("MDB.Get() failed, returning garbage instead of the expected int slice 10, 20, 30")
+		t.Errorf("Get() failed, returning garbage instead of the expected int slice 10, 20, 30")
+	}
+
+	tx, err = db.Begin()
+	if err != nil {
+		t.Errorf("Begin() transaction failed: %s", err)
 	}
 	d := time.Now()
-	err = db.Set("test", item, "Modified", []Value{NewDate(d)})
+	err = tx.Set("test", item, "Modified", []Value{NewDate(d)})
 	if err != nil {
-		t.Errorf("MDB.Set() single date failed: %s", err)
+		t.Errorf("Set() single date failed: %s", err)
 	}
+	err = tx.Commit()
+	if err != nil {
+		t.Errorf("Commit() failed: %s", err)
+	}
+
 	values, err = db.Get("test", item, "Modified")
 	if err != nil {
-		t.Errorf("MDB.Get() single date failed: %s", err)
+		t.Errorf("Get() single date failed: %s", err)
 	}
 	if len(values) != 1 || d.UTC().Format(time.RFC3339) != values[0].Datetime().UTC().Format(time.RFC3339) {
-		t.Errorf("MDB.Get() or previous MDB.Set() failed for date, expected RFC3339 date %s, given %s",
+		t.Errorf("Get() or previous Set() failed for date, expected RFC3339 date %s, given %s",
 			d.UTC().Format(time.RFC3339), values[0].Datetime().Format(time.RFC3339))
 	}
-	b := []byte("This is \000a test")
-	err = db.Set("test", item, "Misc", []Value{NewBytes(b)})
+
+	tx, err = db.Begin()
 	if err != nil {
-		t.Errorf("MDB.Set() failed for bytes with null in it: %s", err)
+		t.Errorf("Begin() transaction failed: %s", err)
 	}
+	b := []byte("This is \000a test")
+	err = tx.Set("test", item, "Misc", []Value{NewBytes(b)})
+	if err != nil {
+		t.Errorf("Set() failed for bytes with null in it: %s", err)
+	}
+	err = tx.Commit()
+	if err != nil {
+		t.Errorf("Commit() failed: %s", err)
+	}
+
 	values, err = db.Get("test", item, "Misc")
 	if err != nil {
-		t.Errorf("MDB.Get() single blob containing null failed: %s", err)
+		t.Errorf("Get() single blob containing null failed: %s", err)
 	}
 	if len(values) != 1 {
-		t.Errorf("MDB.Get() single blob failed, length should be 1, given %d", len(values))
+		t.Errorf("Get() single blob failed, length should be 1, given %d", len(values))
+	}
+
+	tx, err = db.Begin()
+	if err != nil {
+		t.Errorf("Begin() transaction failed: %s", err)
 	}
 	for i, b2 := range values[0].Bytes() {
 		if b[i] != b2 {
-			t.Errorf("MDB.Get() single blob or previous MDB.Set() failed, expected blob[%d]=%q, given blob[%d]=%q", i, b2, i, b[i])
+			t.Errorf("Get() single blob or previous Set() failed, expected blob[%d]=%q, given blob[%d]=%q", i, b2, i, b[i])
 			break
 		}
 	}
-	err = db.Set("test", item, "Data", []Value{NewBytes([]byte(""))})
+	err = tx.Set("test", item, "Data", []Value{NewBytes([]byte(""))})
 	if err != nil {
-		t.Errorf("MDB.Set() failed for empty values")
+		t.Errorf("Set() failed for empty values")
 	}
+	err = tx.Commit()
+	if err != nil {
+		t.Errorf("Commit() failed: %s", err)
+	}
+
 	values, err = db.Get("test", item, "Data")
 	if err != nil {
-		t.Errorf("MDB.Get() blob list failed: %s", err)
+		t.Errorf("Get() blob list failed: %s", err)
 	}
 	if len(values) != 1 {
-		t.Errorf("MDB.Get() blob list failed, expected return length 1, given %d", len(values))
+		t.Errorf("Get() blob list failed, expected return length 1, given %d", len(values))
 	}
 	if len(values[0].Bytes()) != 0 {
-		t.Errorf("MDB.Get() blob list with one empty blob, expected an empty []byte slice, given something else")
+		t.Errorf("Get() blob list with one empty blob, expected an empty []byte slice, given something else")
 	}
-	err = db.Set("test", item, "Schedules", []Value{NewDateStr("2017-02-27T17:31:00Z"),
+
+	tx, err = db.Begin()
+	if err != nil {
+		t.Errorf("Begin() transaction failed: %s", err)
+	}
+	err = tx.Set("test", item, "Schedules", []Value{NewDateStr("2017-02-27T17:31:00Z"),
 		NewDateStr("1969-04-30T23:59:00+04:00"), NewDateStr("2140-12-23T18:00:00Z")})
 	if err != nil {
-		t.Errorf("MDB.Set() failed for list of dates: %s", err)
+		t.Errorf("Set() failed for list of dates: %s", err)
 	}
+	err = tx.Commit()
+	if err != nil {
+		t.Errorf("Commit() failed: %s", err)
+	}
+
 	values, err = db.Get("test", item, "Schedules")
 	if err != nil {
-		t.Errorf("MDB.Get() failed for date list: %s", err)
+		t.Errorf("Get() failed for date list: %s", err)
 	}
 	if len(values) != 3 {
-		t.Errorf("MDB.Get() expected date list of length 3, given length %d", len(values))
+		t.Errorf("Get() expected date list of length 3, given length %d", len(values))
 	}
 	v := NewDateStr("2017-02-27T17:31:00Z")
 	expected := v.Datetime().UTC().Format(time.RFC3339)
 	given := values[0].String()
 	if given != expected {
-		t.Errorf("MDB.Get() failed for date list entry 0, given %s, expected %s", given, expected)
+		t.Errorf("Get() failed for date list entry 0, given %s, expected %s", given, expected)
 	}
 	v = NewDateStr("1969-04-30T23:59:00+04:00")
 	expected = v.Datetime().UTC().Format(time.RFC3339)
 	given = values[1].String()
 	if given != expected {
-		t.Errorf("MDB.Get() failed for date list entry 0, given %s, expected %s", given, expected)
+		t.Errorf("Get() failed for date list entry 0, given %s, expected %s", given, expected)
 	}
 	v = NewDateStr("2140-12-23T18:00:00Z")
 	expected = v.Datetime().UTC().Format(time.RFC3339)
 	given = values[2].String()
 	if given != expected {
-		t.Errorf("MDB.Get() failed for date list entry 0, given %s, expected %s", given, expected)
+		t.Errorf("Get() failed for date list entry 0, given %s, expected %s", given, expected)
 	}
 	// GetFields
 	fields, err := db.GetFields("test")
 	if err != nil {
-		t.Errorf("MDB.GetFields() failed: %s", err)
+		t.Errorf("GetFields() failed: %s", err)
 	}
 	if len(fields) != 8 {
-		t.Errorf("MDB.GetFields() failed, expected %d fields, returned %d", 8, len(fields))
+		t.Errorf("GetFields() failed, expected %d fields, returned %d", 8, len(fields))
 	}
 	e := make([]string, 8)
 	e[0] = "Name"
@@ -531,7 +667,7 @@ func TestMDB(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("MDB.GetFields() returned an unexpected result")
+			t.Errorf("GetFields() returned an unexpected result")
 		}
 	}
 	q := make([]FieldType, 8)
@@ -551,25 +687,34 @@ func TestMDB(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("MDB.GetFields() returned an unexpected field type")
+			t.Errorf("GetFields() returned an unexpected field type")
 		}
 	}
 	// GetTables
 	tables := db.GetTables()
 	if len(tables) != 1 || tables[0] != "test" {
-		t.Errorf("MDB.GetTables() returned garbage")
+		t.Errorf("GetTables() returned garbage")
 	}
 
+	tx, err = db.Begin()
+	if err != nil {
+		t.Errorf("Begin() transaction failed: %s", err)
+	}
 	// RemoveItem
 	if !db.ItemExists("test", item) {
-		t.Errorf("MDB.ItemExists() returned false for existing item")
+		t.Errorf("ItemExists() returned false for existing item")
 	}
-	err = db.RemoveItem("test", item)
+	err = tx.RemoveItem("test", item)
 	if err != nil {
-		t.Errorf("MDB.RemoveItem() failed: %s", err)
+		t.Errorf("RemoveItem() failed: %s", err)
 	}
+	err = tx.Commit()
+	if err != nil {
+		t.Errorf("Commit() failed: %s", err)
+	}
+
 	if db.ItemExists("test", item) {
-		t.Errorf("MDB.ItemExists() returned true for nonexistent item, should have returned false")
+		t.Errorf("ItemExists() returned true for nonexistent item, should have returned false")
 	}
 
 	// close it
@@ -597,7 +742,7 @@ func TestParseQuery(t *testing.T) {
 	}
 }
 
-// we create random strings for the MDB.Find test, setting this up first
+// we create random strings for the Find test, setting this up first
 const charset = "abcdefghijklmnopqrstuvwxyz" +
 	"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
@@ -683,52 +828,63 @@ func TestFind(t *testing.T) {
 		t.Errorf("Open() failed: %s", err)
 	}
 	// we first create a number of test inputs
+
 	var in []testin
 	const maxtest = 30
 	in = make([]testin, maxtest)
 	for i := range in {
 		item, err := db.NewItem("test")
 		if err != nil {
-			t.Errorf("MDB.NewItem() failed: %s", err)
+			t.Errorf("NewItem() failed: %s", err)
+		}
+
+		tx, err := db.Begin()
+		if err != nil {
+			t.Errorf("db.Begin transaction failed: %s", err)
 		}
 		in[i] = NewRandomTestin(item)
-		err = db.Set("test", in[i].item, "Name", []Value{NewString(in[i].Names[0]),
+		err = tx.Set("test", in[i].item, "Name", []Value{NewString(in[i].Names[0]),
 			NewString(in[i].Names[1]), NewString(in[i].Names[2])})
 		if err != nil {
-			t.Errorf("MDB.Set() failed: %s", err)
+			t.Errorf("Set() failed: %s", err)
 		}
-		err = db.Set("test", in[i].item, "Email", []Value{NewString(in[i].Email)})
+		err = tx.Set("test", in[i].item, "Email", []Value{NewString(in[i].Email)})
 		if err != nil {
-			t.Errorf("MDB.Set() failed: %s", err)
+			t.Errorf("Set() failed: %s", err)
 		}
-		err = db.Set("test", in[i].item, "Modified", []Value{NewDateStr(in[i].Date)})
+		err = tx.Set("test", in[i].item, "Modified", []Value{NewDateStr(in[i].Date)})
 		if err != nil {
-			t.Errorf("MDB.Set() failed: %s", err)
+			t.Errorf("Set() failed: %s", err)
 		}
-		err = db.Set("test", in[i].item, "Schedules", []Value{NewDateStr(in[i].Dates[0]),
+		err = tx.Set("test", in[i].item, "Schedules", []Value{NewDateStr(in[i].Dates[0]),
 			NewDateStr(in[i].Dates[1]), NewDateStr(in[i].Dates[2])})
 		if err != nil {
-			t.Errorf("MDB.Set() failed: %s", err)
+			t.Errorf("Set() failed: %s", err)
 		}
-		err = db.Set("test", in[i].item, "Misc", []Value{NewBytes([]byte(in[i].Blob))})
+		err = tx.Set("test", in[i].item, "Misc", []Value{NewBytes([]byte(in[i].Blob))})
 		if err != nil {
-			t.Errorf("MDB.Set() failed: %s", err)
+			t.Errorf("Set() failed: %s", err)
 		}
-		err = db.Set("test", in[i].item, "Data", []Value{NewBytes([]byte(in[i].Blobs[0])),
+		err = tx.Set("test", in[i].item, "Data", []Value{NewBytes([]byte(in[i].Blobs[0])),
 			NewBytes([]byte(in[i].Blobs[1])), NewBytes([]byte(in[i].Blobs[2]))})
 		if err != nil {
-			t.Errorf("MDB.Set() failed: %s", err)
+			t.Errorf("Set() failed: %s", err)
 		}
-		err = db.Set("test", in[i].item, "Age", []Value{NewInt(in[i].Age)})
+		err = tx.Set("test", in[i].item, "Age", []Value{NewInt(in[i].Age)})
 		if err != nil {
-			t.Errorf("MDB.Set() failed: %s", err)
+			t.Errorf("Set() failed: %s", err)
 		}
-		err = db.Set("test", in[i].item, "Scores", []Value{NewInt(in[i].Scores[0]),
+		err = tx.Set("test", in[i].item, "Scores", []Value{NewInt(in[i].Scores[0]),
 			NewInt(in[i].Scores[1]), NewInt(in[i].Scores[2])})
 		if err != nil {
-			t.Errorf("MDB.Set() failed: %s", err)
+			t.Errorf("Set() failed: %s", err)
+		}
+		err = tx.Commit()
+		if err != nil {
+			t.Errorf("Commit() failed: %s", err)
 		}
 	}
+
 	// now query everything directly first
 	for _, v := range in {
 		// Names string list field
@@ -740,7 +896,7 @@ func TestFind(t *testing.T) {
 			}
 			results, err := db.Find(q, 200)
 			if err != nil {
-				t.Errorf(`MDB.Find() failed for query "%s", should have succeeded`, query)
+				t.Errorf(`Find() failed for query "%s", should have succeeded`, query)
 			}
 			found := false
 			for k := range results {
@@ -749,7 +905,7 @@ func TestFind(t *testing.T) {
 				}
 			}
 			if !found {
-				t.Errorf(`MDB.Find() failed to find Name for query "%s", should have succeeded`, query)
+				t.Errorf(`Find() failed to find Name for query "%s", should have succeeded`, query)
 			}
 		}
 		// Age int field
@@ -760,7 +916,7 @@ func TestFind(t *testing.T) {
 		}
 		results, err := db.Find(q, 200)
 		if err != nil {
-			t.Errorf(`MDB.Find() failed for query "%s", should have succeeded`, query)
+			t.Errorf(`Find() failed for query "%s", should have succeeded`, query)
 		}
 		found := false
 		for k := range results {
@@ -769,7 +925,7 @@ func TestFind(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf(`MDB.Find() failed to find Name for query "%s", should have succeeded`, query)
+			t.Errorf(`Find() failed to find Name for query "%s", should have succeeded`, query)
 		}
 		// Email string field
 		query = fmt.Sprintf("test Email=%s", v.Email)
@@ -779,7 +935,7 @@ func TestFind(t *testing.T) {
 		}
 		results, err = db.Find(q, 200)
 		if err != nil {
-			t.Errorf(`MDB.Find() failed for query "%s", should have succeeded`, query)
+			t.Errorf(`Find() failed for query "%s", should have succeeded`, query)
 		}
 		found = false
 		for k := range results {
@@ -788,7 +944,7 @@ func TestFind(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf(`MDB.Find() failed to find Name for query "%s", should have succeeded`, query)
+			t.Errorf(`Find() failed to find Name for query "%s", should have succeeded`, query)
 		}
 		// Scores int list field
 		// Names string list field
@@ -800,7 +956,7 @@ func TestFind(t *testing.T) {
 			}
 			results, err := db.Find(q, 200)
 			if err != nil {
-				t.Errorf(`MDB.Find() failed for query "%s", should have succeeded`, query)
+				t.Errorf(`Find() failed for query "%s", should have succeeded`, query)
 			}
 			found := false
 			for k := range results {
@@ -809,7 +965,7 @@ func TestFind(t *testing.T) {
 				}
 			}
 			if !found {
-				t.Errorf(`MDB.Find() failed to find Name for query "%s", should have succeeded`, query)
+				t.Errorf(`Find() failed to find Name for query "%s", should have succeeded`, query)
 			}
 		}
 		// Data blob list field
@@ -821,7 +977,7 @@ func TestFind(t *testing.T) {
 			}
 			results, err := db.Find(q, 200)
 			if err != nil {
-				t.Errorf(`MDB.Find() failed for query "%s", should have succeeded: %s`, query, err)
+				t.Errorf(`Find() failed for query "%s", should have succeeded: %s`, query, err)
 			}
 			found := false
 			for k := range results {
@@ -830,7 +986,7 @@ func TestFind(t *testing.T) {
 				}
 			}
 			if !found {
-				t.Errorf(`MDB.Find() failed to find Blob for query "%s", should have succeeded`, query)
+				t.Errorf(`Find() failed to find Blob for query "%s", should have succeeded`, query)
 			}
 		}
 		// Misc blob field
@@ -841,7 +997,7 @@ func TestFind(t *testing.T) {
 		}
 		results, err = db.Find(q, 200)
 		if err != nil {
-			t.Errorf(`MDB.Find() failed for query "%s", should have succeeded`, query)
+			t.Errorf(`Find() failed for query "%s", should have succeeded`, query)
 		}
 		found = false
 		for k := range results {
@@ -850,7 +1006,7 @@ func TestFind(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf(`MDB.Find() failed to find single Blob for query "%s", should have succeeded`, query)
+			t.Errorf(`Find() failed to find single Blob for query "%s", should have succeeded`, query)
 		}
 	}
 	db.Close()
@@ -863,7 +1019,7 @@ func TestBackup(t *testing.T) {
 	}
 	defer db.Close()
 	if err := db.Backup(tmpfile2.Name()); err != nil {
-		t.Errorf(`MDB.Backup() failed: %s`, err)
+		t.Errorf(`Backup() failed: %s`, err)
 	}
 }
 

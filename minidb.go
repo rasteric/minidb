@@ -10,12 +10,14 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3" // The driver for sqlite3 is pulled in.
@@ -23,10 +25,23 @@ import (
 
 // MDB is the main database object.
 type MDB struct {
-	base     *sql.DB
-	driver   string
-	location string
+	base       *sql.DB
+	tx         *Tx
+	driver     string
+	location   string
+	globalLock *sync.Mutex
 }
+
+// Tx represents a transaction similar to sql.Tx.
+type Tx struct {
+	tx        *sql.Tx
+	prev      *Tx
+	mdb       *MDB
+	savePoint uint
+	released  bool
+}
+
+var savePointCounter uint
 
 // Item is a database item. Fields and tables are identified by strings.
 type Item int64
@@ -295,16 +310,21 @@ func (db *MDB) init() error {
 	if db.base == nil {
 		return errNilDB
 	}
-	_, err := db.base.Exec(`CREATE TABLE IF NOT EXISTS _TABLES (Id INTEGER PRIMARY KEY,
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.tx.Exec(`CREATE TABLE IF NOT EXISTS _TABLES (Id INTEGER PRIMARY KEY,
 Name TEXT NOT NULL)`)
 	if err != nil {
 		return err
 	}
-	_, err = db.base.Exec(`CREATE INDEX IF NOT EXISTS _TABIDX ON _TABLES (Name)`)
+	_, err = tx.tx.Exec(`CREATE INDEX IF NOT EXISTS _TABIDX ON _TABLES (Name)`)
 	if err != nil {
 		return err
 	}
-	_, err = db.base.Exec(`CREATE TABLE IF NOT EXISTS _COLS (Id INTEGER PRIMARY KEY,
+	_, err = tx.tx.Exec(`CREATE TABLE IF NOT EXISTS _COLS (Id INTEGER PRIMARY KEY,
 	 Name STRING NOT NULL,
 	 FieldType INTEGER NOT NULL,
 	Owner INTEGER NOT NULL,
@@ -312,20 +332,23 @@ Name TEXT NOT NULL)`)
 	if err != nil {
 		return err
 	}
-	_, err = db.base.Exec(`CREATE TABLE IF NOT EXISTS _KVINT (Id INTEGER PRIMARY KEY NOT NULL, Value INTEGER NOT NULL)`)
+	_, err = tx.tx.Exec(`CREATE TABLE IF NOT EXISTS _KVINT (Id INTEGER PRIMARY KEY NOT NULL, Value INTEGER NOT NULL)`)
 	if err != nil {
 		return err
 	}
-	_, err = db.base.Exec(`CREATE TABLE IF NOT EXISTS _KVSTR (Id INTEGER PRIMARY KEY NOT NULL, Value TEXT NOT NULL)`)
+	_, err = tx.tx.Exec(`CREATE TABLE IF NOT EXISTS _KVSTR (Id INTEGER PRIMARY KEY NOT NULL, Value TEXT NOT NULL)`)
 	if err != nil {
 		return err
 	}
-	_, err = db.base.Exec(`CREATE TABLE IF NOT EXISTS _KVBLOB (Id INTEGER PRIMARY KEY NOT NULL, Value BLOB NOT NULL)`)
+	_, err = tx.tx.Exec(`CREATE TABLE IF NOT EXISTS _KVBLOB (Id INTEGER PRIMARY KEY NOT NULL, Value BLOB NOT NULL)`)
 	if err != nil {
 		return err
 	}
-	_, err = db.base.Exec(`CREATE TABLE IF NOT EXISTS _KVDATE (Id INTEGER PRIMARY KEY NOT NULL, Value TEXT NOT NULL)`)
-	return err
+	_, err = tx.tx.Exec(`CREATE TABLE IF NOT EXISTS _KVDATE (Id INTEGER PRIMARY KEY NOT NULL, Value TEXT NOT NULL)`)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Open creates or opens a minidb.
@@ -338,6 +361,7 @@ func Open(driver string, file string) (*MDB, error) {
 	if base == nil {
 		return nil, errNilDB
 	}
+	db.globalLock = &sync.Mutex{}
 	db.base = base
 	db.driver = driver
 	db.location = file
@@ -401,18 +425,99 @@ func (db *MDB) Close() error {
 		}
 		db.driver = ""
 		db.location = ""
+		db.globalLock = nil
 	}
 	return nil
 }
 
-// Base returns the base sql.DB that minidb uses for its underlying storage.
+// Base returns the base sqlx.DB that minidb uses for its underlying storage.
 func (db *MDB) Base() *sql.DB {
 	return db.base
 }
 
-// Begin starts a transaction, it is a direct wrapper to the underlying sql database Begin function.
-func (db *MDB) Begin() (*sql.Tx, error) {
-	return db.base.Begin()
+// Begin starts a transaction.
+func (db *MDB) Begin() (*Tx, error) {
+	if db.globalLock == nil {
+		return nil, errors.New("attempt to open a transaction on a closed DB")
+	}
+	db.globalLock.Lock()
+	defer db.globalLock.Unlock()
+	if db.tx == nil {
+		//fmt.Println("*** new real transaction")
+		sqltx, err := db.base.Begin()
+		if err != nil {
+			return nil, err
+		}
+		tx := &Tx{
+			tx:  sqltx,
+			mdb: db,
+		}
+		db.tx = tx
+		return tx, nil
+	}
+	savePointCounter++
+	tx := &Tx{
+		tx:        db.tx.tx,
+		mdb:       db,
+		prev:      db.tx,
+		savePoint: savePointCounter,
+	}
+	db.tx = tx
+	_, err := db.tx.tx.Exec(fmt.Sprintf("SAVEPOINT SP%d;", tx.savePoint))
+	//fmt.Printf("*** New savepoint SP%d\n", savePoint)
+	if err != nil {
+		return nil, fmt.Errorf("minidb begin transaction failed, %s", err)
+	}
+	return tx, nil
+}
+
+// Commit the changes to the database.
+func (tx *Tx) Commit() error {
+	if tx.mdb.globalLock == nil {
+		return errors.New("attempt to commit a transaction of a closed DB")
+	}
+	tx.mdb.globalLock.Lock()
+	defer tx.mdb.globalLock.Unlock()
+	tx.mdb.tx = tx.prev
+	if tx.prev == nil {
+		//fmt.Println("*** real commit")
+		return tx.tx.Commit()
+	}
+	if tx.released {
+		return errors.New("nested transaction has already been rolled back or commmitted")
+	}
+	_, err := tx.tx.Exec(fmt.Sprintf("RELEASE SP%d;", tx.savePoint))
+	if err != nil {
+		return fmt.Errorf("minidb commit transaction failed, %s", err)
+	}
+	//fmt.Printf("*** release savepoint SP%d\n", savePoint)
+	tx.released = true
+	return nil
+}
+
+// Rollback the changes in the database.
+func (tx *Tx) Rollback() error {
+	if tx.mdb.globalLock == nil {
+		return errors.New("attempt to rollback a transaction of a closed DB")
+	}
+	tx.mdb.globalLock.Lock()
+	defer tx.mdb.globalLock.Unlock()
+	if tx.released {
+		//fmt.Println("*** rollback after savepoint release (do nothing)")
+		return nil
+	}
+	tx.mdb.tx = tx.prev
+	tx.released = true
+	if tx.prev == nil {
+		//fmt.Println("*** real rollback")
+		return tx.tx.Rollback()
+	}
+	//fmt.Printf("*** rollback to savepoint SP%d\n", savePoint)
+	_, err := tx.tx.Exec(fmt.Sprintf("ROLLBACK TO SP%d", tx.savePoint))
+	if err != nil {
+		return fmt.Errorf("minidb rollback transaction failed, %s", err)
+	}
+	return nil
 }
 
 // TableExists returns true if the table exists, false otherwise.
@@ -582,6 +687,11 @@ func ParseTime(s string) (time.Time, error) {
 // sequences plus underscore "_" as the only allowed special character. None of the names may start with
 // an underscore.
 func (db *MDB) AddTable(table string, fields []Field) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	if !validTable.MatchString(table) {
 		return Fail("invalid table name '%s'", table)
 	}
@@ -593,7 +703,7 @@ func (db *MDB) AddTable(table string, fields []Field) error {
 		}
 	}
 	toExec += ");"
-	_, err := db.base.Exec(toExec)
+	_, err = tx.tx.Exec(toExec)
 	if err != nil {
 		return Fail("cannot create maintenance table: %s", err)
 	}
@@ -607,7 +717,7 @@ FOREIGN KEY(Owner) REFERENCES %s(Id))`, listFieldToTableName(table, field.Name),
 				field.Name,
 				getTypeString(field.Sort),
 				table)
-			_, err = db.base.Exec(toExec)
+			_, err = tx.tx.Exec(toExec)
 			if err != nil {
 				return Fail("cannot create list field %s in table %s: %s", field.Name, table, err)
 			}
@@ -615,7 +725,7 @@ FOREIGN KEY(Owner) REFERENCES %s(Id))`, listFieldToTableName(table, field.Name),
 	}
 	// update the internal housekeeping tables
 	toExec = "INSERT OR IGNORE INTO _TABLES (Name) VALUES (?)"
-	result, err := db.base.Exec(toExec, table)
+	result, err := tx.tx.Exec(toExec, table)
 	if err != nil {
 		return Fail("Failed to update maintenance table: %s", err)
 	}
@@ -624,39 +734,39 @@ FOREIGN KEY(Owner) REFERENCES %s(Id))`, listFieldToTableName(table, field.Name),
 		return Fail("failed to update maintenance table: %s", err)
 	}
 	for _, field := range fields {
-		_, err := db.base.Exec(`INSERT INTO _COLS (Name,FieldType,Owner) VALUES (?,?,?)`, field.Name, field.Sort, tableID)
+		_, err := tx.tx.Exec(`INSERT INTO _COLS (Name,FieldType,Owner) VALUES (?,?,?)`, field.Name, field.Sort, tableID)
 		if err != nil {
 			return Fail("cannot insert maintenance field %s for table %s: %s",
 				field.Name, table, err)
 		}
 		if isListFieldType(field.Sort) {
-			_, err = db.base.Exec(`INSERT INTO _TABLES (Name) VALUES (?)`, listFieldToTableName(table, field.Name))
+			_, err = tx.tx.Exec(`INSERT INTO _TABLES (Name) VALUES (?)`, listFieldToTableName(table, field.Name))
 		}
 		if err != nil {
 			return Fail("cannot insert maintenance list table %s for table %s: %s",
 				listFieldToTableName(table, field.Name), table, err)
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 // Index creates an index for field in table unless the index exists already.
 // An index increases the search speed of certain string queries on the field, such as "Person name=joh%".
-func (db *MDB) Index(table, field string) error {
+func (tx *Tx) Index(table, field string) error {
 	if !validTable.MatchString(table) {
 		return Fail("invalid table name '%s'", table)
 	}
-	if !db.FieldExists(table, field) {
+	if !tx.mdb.FieldExists(table, field) {
 		return Fail("field '%s' does not exist in table '%s'", field, table)
 	}
 	var realtable string
-	if db.IsListField(table, field) {
+	if tx.mdb.IsListField(table, field) {
 		realtable = listFieldToTableName(table, field)
 	} else {
 		realtable = table
 	}
 	indexName := field + "_" + realtable + "_IDX"
-	_, err := db.base.Exec(fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s(%s);`, indexName, realtable, field))
+	_, err := tx.tx.Exec(fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s(%s);`, indexName, realtable, field))
 	if err != nil {
 		return Fail("failed to create index for field '%s' in table '%s': %s", field, table, err)
 	}
@@ -684,16 +794,37 @@ func (db *MDB) NewItem(table string) (Item, error) {
 	return Item(id), nil
 }
 
+// UseItem creates a new item with the given ID or returns the item with the given ID
+// if it already exists. This may be used when fixed IDs are needed, but should be avoided
+// when these are not strictly necessary.
+func (db *MDB) UseItem(table string, id uint64) (Item, error) {
+	if !validTable.MatchString(table) {
+		return 0, Fail("invalid table name '%s'", table)
+	}
+	if !db.TableExists(table) {
+		return 0, Fail("table '%s' does not exist", table)
+	}
+	if db.ItemExists(table, Item(id)) {
+		return Item(id), nil
+	}
+	toExec := fmt.Sprintf("INSERT INTO %s(Id) VALUES (?);", table)
+	_, err := db.base.Exec(toExec, id)
+	if err != nil {
+		return 0, err
+	}
+	return Item(id), nil
+}
+
 // RemoveItem remove an item from the table.
-func (db *MDB) RemoveItem(table string, item Item) error {
+func (tx *Tx) RemoveItem(table string, item Item) error {
 	if !validTable.MatchString(table) {
 		return Fail(`invalid table name "%s"`, table)
 	}
-	if !db.TableExists(table) {
+	if !tx.mdb.TableExists(table) {
 		return Fail("table '%s' does not exist", table)
 	}
-	if db.ItemExists(table, item) {
-		_, err := db.base.Exec(fmt.Sprintf(`DELETE FROM %s WHERE Id=?;`, table), item)
+	if tx.mdb.ItemExists(table, item) {
+		_, err := tx.tx.Exec(fmt.Sprintf(`DELETE FROM %s WHERE Id=?;`, table), item)
 		if err != nil {
 			return Fail(`error while deleting %s %d`, table, item)
 		}
@@ -889,89 +1020,79 @@ func (db *MDB) getListField(table string, item Item, field string) ([]Value, err
 
 // Set the given values in the item in table and given field. An error is returned
 // if the field types don't match the data.
-func (db *MDB) Set(table string, item Item, field string, data []Value) error {
+func (tx *Tx) Set(table string, item Item, field string, data []Value) error {
 	if !validTable.MatchString(table) {
 		return Fail("invalid table name '%s'", table)
 	}
-	if !db.TableExists(table) {
+	if !tx.mdb.TableExists(table) {
 		return Fail("table '%s' does not exist", table)
 	}
-	if !db.FieldExists(table, field) {
+	if !tx.mdb.FieldExists(table, field) {
 		return Fail("field '%s' does not exist in table '%s'", field, table)
 	}
-	if !db.ItemExists(table, item) {
+	if !tx.mdb.ItemExists(table, item) {
 		return Fail("no %s %d", table, item)
 	}
-	if len(data) == 0 {
-		return Fail("no value given to set in %s %d %s", table, item, field)
-	}
-	t := ToBaseType(db.MustGetFieldType(table, field))
+	t := ToBaseType(tx.mdb.MustGetFieldType(table, field))
 	for i := range data {
 		if data[i].Sort != t {
 			return Fail("type error %s %d %s: expected %s, encountered %s",
 				table, item, field, GetUserTypeString(t), GetUserTypeString(data[i].Sort))
 		}
 	}
-	if db.IsListField(table, field) {
-		return db.setListFields(table, item, field, data)
+	if tx.mdb.IsListField(table, field) {
+		return tx.setListFields(table, item, field, data)
 	}
 	if len(data) > 1 {
 		return Fail("attempt to set %d values in single field %s %d %s, should be just one value",
 			len(data), table, item, field)
 	}
-	return db.setSingleField(table, item, field, data[0])
+	return tx.setSingleField(table, item, field, data[0])
 }
 
-func (db *MDB) setSingleField(table string, item Item, field string, datum Value) error {
+func (tx *Tx) setSingleField(table string, item Item, field string, datum Value) error {
 	var err error
 	switch datum.Sort {
 	case DBInt:
-		_, err = db.base.Exec(fmt.Sprintf(`UPDATE "%s" SET "%s" = ? WHERE Id=?;`, table, field), datum.Int(), item)
+		_, err = tx.tx.Exec(fmt.Sprintf(`UPDATE "%s" SET "%s" = ? WHERE Id=?;`, table, field), datum.Int(), item)
 	case DBBlob:
-		_, err = db.base.Exec(fmt.Sprintf(`UPDATE "%s" SET "%s" = ? WHERE Id=?`, table, field),
+		_, err = tx.tx.Exec(fmt.Sprintf(`UPDATE "%s" SET "%s" = ? WHERE Id=?`, table, field),
 			datum.Bytes(), item)
 	default:
-		_, err = db.base.Exec(fmt.Sprintf(`UPDATE "%s" SET "%s" = ? WHERE Id=?;`, table, field), datum.String(), item)
+		_, err = tx.tx.Exec(fmt.Sprintf(`UPDATE "%s" SET "%s" = ? WHERE Id=?;`, table, field), datum.String(), item)
 	}
 	return err
 }
 
-func (db *MDB) setListFields(table string, item Item, field string, data []Value) error {
+func (tx *Tx) setListFields(table string, item Item, field string, data []Value) error {
 	var err error
-	tx, err := db.base.Begin()
-	if err != nil {
-		return err
-	}
 	tableName := listFieldToTableName(table, field)
-	if !db.TableExists(tableName) {
-		tx.Rollback()
+	if !tx.mdb.TableExists(tableName) {
 		return Fail("internal error, table %s does not exist (database has been tampered)",
 			tableName)
 	}
-	_, err = tx.Exec(fmt.Sprintf(`DELETE FROM %s WHERE Owner=?`, tableName), item)
+	_, err = tx.tx.Exec(fmt.Sprintf(`DELETE FROM %s WHERE Owner=?`, tableName), item)
 	if err != nil {
-		tx.Rollback()
 		return err
 	}
 
 	for i := range data {
 		switch data[i].Sort {
 		case DBInt:
-			_, err = tx.Exec(fmt.Sprintf(`INSERT INTO %s(%s,Owner) VALUES(?,?)`, tableName, field),
+			_, err = tx.tx.Exec(fmt.Sprintf(`INSERT INTO %s(%s,Owner) VALUES(?,?)`, tableName, field),
 				data[i].Int(), item)
 		case DBBlob:
-			_, err = tx.Exec(fmt.Sprintf(`INSERT INTO %s(%s,Owner) VALUES(?,?)`, tableName, field),
+			_, err = tx.tx.Exec(fmt.Sprintf(`INSERT INTO %s(%s,Owner) VALUES(?,?)`, tableName, field),
 				data[i].Bytes(), item)
 		default:
-			_, err = tx.Exec(fmt.Sprintf(`INSERT INTO %s(%s,Owner) VALUES(?,?)`, tableName, field),
+			_, err = tx.tx.Exec(fmt.Sprintf(`INSERT INTO %s(%s,Owner) VALUES(?,?)`, tableName, field),
 				data[i].String(), item)
 		}
 		if err != nil {
-			tx.Rollback()
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // GetFields returns the fields that belong to a table, including list fields.
