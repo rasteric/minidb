@@ -419,6 +419,7 @@ func (db *MDB) Backup(destination string) error {
 // Close closes the database, making sure that all remaining transactions are finished.
 func (db *MDB) Close() error {
 	if db.base != nil {
+		_, _ = db.base.Exec(`PRAGMA optimize;`)
 		err := db.base.Close()
 		if err != nil {
 			return Fail("ERROR Failed to close database - %s.\n", err)
